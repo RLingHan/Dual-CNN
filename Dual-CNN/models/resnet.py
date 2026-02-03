@@ -382,26 +382,30 @@ class embed_net(nn.Module):
         sh_pl = sh_pl.view(sh_pl.size(0), -1)
 
         if self.decompose:
-            # 初始化sp_pl
             sp_pl = torch.zeros_like(sh_pl)
-            x_v3, x_v4 = self.V_bh(x2[sub == 0])
-            v_m = self.mask1(x_v4)
-            x_v4 = v_m * x_v4
-            v_pl = gem(x_v4).squeeze()
-            v_pl = v_pl.view(v_pl.size(0), -1)
-            sp_pl[sub == 0] = v_pl  # 放回原始位置
 
-            x_i3, x_i4 = self.I_bh(x2[sub == 1])
-            x_m = self.mask2(x_i4)
-            x_i4 = x_m * x_i4
-            i_pl = gem(x_i4).squeeze()
-            i_pl = i_pl.view(i_pl.size(0), -1)
-            sp_pl[sub == 1] = i_pl  # 放回原始位置
+            if (sub == 0).any():
+                x_v3, x_v4 = self.V_bh(x2[sub == 0])
+                v_m = self.mask1(x_v4)
+                x_v4 = v_m * x_v4
+                v_pl = gem(x_v4).squeeze()
+                if v_pl.numel() > 0:  # ← 添加这个检查
+                    v_pl = v_pl.view(v_pl.size(0), -1)
+                    sp_pl[sub == 0] = v_pl
+
+            if (sub == 1).any():
+                x_i3, x_i4 = self.I_bh(x2[sub == 1])
+                x_m = self.mask2(x_i4)
+                x_i4 = x_m * x_i4
+                i_pl = gem(x_i4).squeeze()
+                if i_pl.numel() > 0:  # ← 添加这个检查
+                    i_pl = i_pl.view(i_pl.size(0), -1)
+                    sp_pl[sub == 1] = i_pl
 
         if self.decompose:
             return sh_pl, sp_pl
-        else :
-            return sh_pl,None
+        else:
+            return sh_pl, None
 
 
 def _resnet(arch, block, layers, pretrained, progress, **kwargs):
