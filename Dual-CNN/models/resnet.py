@@ -377,9 +377,7 @@ class embed_net(nn.Module):
         batch_size = x.size(0)
 
         x2 = self.shared_module_fr(x)
-
-
-        x_sh3, x_sh4 = self.shared_module_bh(x)
+        x_sh3, x_sh4 = self.shared_module_bh(x2)
         sh_pl = gem(x_sh4).squeeze()
         sh_pl = sh_pl.view(sh_pl.size(0), -1)
 
