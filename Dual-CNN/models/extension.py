@@ -75,15 +75,15 @@ class SpatialAlignModule(nn.Module):
         """
         B, C, H, W = x.shape
         device = x.device
-
+        dtype = x.dtype
         # 组合全局和局部offset
         global_offset = global_offset.expand(B, 2, H, W)
         total_offset = global_offset + local_offset * 0.1  # 局部offset用小权重
 
-        # 创建采样网格
+        # 创建采样网格 - 指定dtype与输入x一致，避免生成默认float32
         grid_y, grid_x = torch.meshgrid(
-            torch.linspace(-1, 1, H, device=device),
-            torch.linspace(-1, 1, W, device=device),
+            torch.linspace(-1, 1, H, device=device, dtype=dtype),
+            torch.linspace(-1, 1, W, device=device, dtype=dtype),
             indexing='ij'
         )
         grid = torch.stack([grid_x, grid_y], dim=0).unsqueeze(0).expand(B, -1, -1, -1)
@@ -109,8 +109,8 @@ class SpatialAlignModule(nn.Module):
         # 这里假设输入已经是分开的V和I
 
         # 预测中间参考特征（使用全局池化后的特征）
-        v_global = F.adaptive_avg_pool2d(x_V, 1).expand_as(x_V)
-        i_global = F.adaptive_avg_pool2d(x_I, 1).expand_as(x_I)
+        v_global = F.adaptive_avg_pool2d(x_V, 1).expand_as(x_V).to(dtype=x_V.dtype)
+        i_global = F.adaptive_avg_pool2d(x_I, 1).expand_as(x_I).to(dtype=x_I.dtype)
 
         # 注意这里需要确保batch大小匹配，取最小batch
         min_batch = min(x_V.size(0), x_I.size(0))
