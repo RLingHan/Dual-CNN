@@ -208,7 +208,7 @@ def modal_centroid_loss(F1, F2, labels, modalities, margin):
     return losses.mean()
 
 
-def compute_align_loss(self, align_feats , in_norm):
+def compute_align_loss(align_feats , in_norm):
     v_aligned = align_feats['x2_V_aligned']
     i_aligned = align_feats['x2_I_aligned']
     ref = align_feats['ref_feat']
