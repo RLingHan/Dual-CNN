@@ -28,8 +28,8 @@ class SimplifiedMamba2Block(nn.Module):
         self.in_proj = nn.Linear(d_model, self.d_inner * 2, bias=False)
 
         # SSM参数 - 更保守的初始化
-        A_init = torch.randn(self.d_inner, d_state) * 0.1  # 小的初始化
-        self.A_log = nn.Parameter(torch.log(-A_init.abs() - 0.1))
+        A_init = torch.rand(self.d_inner, d_state) * 0.1 + 0.01
+        self.A_log = nn.Parameter(torch.log(A_init))
 
         self.B = nn.Parameter(torch.randn(self.d_inner, d_state) * 0.1)
         self.C = nn.Parameter(torch.randn(self.d_inner, d_state) * 0.01)
@@ -75,8 +75,7 @@ class SimplifiedMamba2Block(nn.Module):
         x_ssm, gate = x_proj.chunk(2, dim=-1)
 
         # A矩阵 - 更严格的范围
-        A = -torch.exp(self.A_log.clamp(min=-5, max=0))
-        A = A.clamp(min=-2, max=-0.01)
+        A = -torch.clamp(torch.exp(self.A_log), max=0.9)
 
         # 简化的SSM - 只用单向扫描避免复杂度
         h = torch.zeros(B_batch, self.d_inner, self.d_state, device=x.device, dtype=x.dtype)
@@ -87,7 +86,7 @@ class SimplifiedMamba2Block(nn.Module):
 
             # 状态更新 - 添加epsilon避免数值问题
             update = torch.einsum('bi,id->bid', x_t, B_matrix)
-            h = h * A.unsqueeze(0) * 0.9 + update * 0.1  # 降低反馈增益
+            h = h + 0.1 * (update - h)
 
             # 严格裁剪
             h = torch.clamp(h, min=-5, max=5)
