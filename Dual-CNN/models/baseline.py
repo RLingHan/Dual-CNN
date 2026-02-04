@@ -399,7 +399,7 @@ class Baseline(nn.Module):
 
         if self.spatial_align and "x2_V_aligned" in align_feats:
             align_loss = compute_align_loss(align_feats, self.align_instance_norm)
-            loss += align_loss
+            loss += 0.2 * align_loss
             metric.update({'align_loss': align_loss.data})
 
 
