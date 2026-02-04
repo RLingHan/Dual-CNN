@@ -4,6 +4,8 @@ from torch.nn import functional as F
 # from torchvision.models.utils import load_state_dict_from_url   #原来
 from torch.hub import load_state_dict_from_url
 import torch
+import math
+from extension import SpatialAlignModule,MambaCrossBlock
 
 __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
            'resnet152', 'resnext50_32x4d', 'resnext101_32x8d']
@@ -360,7 +362,7 @@ def gem(x, p=3, eps=1e-6):
 
 
 class embed_net(nn.Module):
-    def __init__(self, drop_last_stride,  decompose=False):
+    def __init__(self, drop_last_stride,  decompose=False,  spatial_align=False, mamba_cross=False):
         super(embed_net, self).__init__()
 
         self.shared_module_fr = Shared_module_fr(drop_last_stride=drop_last_stride)
@@ -369,15 +371,88 @@ class embed_net(nn.Module):
         self.I_bh = Special_module_bh(drop_last_stride=drop_last_stride)
 
         self.decompose = decompose
-        if decompose:
+        self.spatial_align = spatial_align
+        self.mamba_cross = mamba_cross
+
+        self.spatial_align = True
+        # 空间对齐模块
+        if self.spatial_align:
+            self.align_module = SpatialAlignModule(in_channels=512)
+
+        if self.decompose:
             self.mask1 = Mask(2048)
             self.mask2 = Mask(2048)
+            self.mamba_cross = False
+            # Mamba交叉注入模块
+            if self.mamba_cross:
+                # layer3后插入：1024通道 -> 512
+                self.mamba_block_layer3 = MambaCrossBlock(in_channels=1024, d_model=512)
+                # layer4后插入：2048通道 -> 512
+                self.mamba_block_layer4 = MambaCrossBlock(in_channels=2048, d_model=512)
 
     def forward(self, x, sub):
         batch_size = x.size(0)
 
-        x2 = self.shared_module_fr(x)
-        x_sh3, x_sh4 = self.shared_module_bh(x2)
+        # 存储中间特征用于对齐损失
+        align_feats = {}
+
+        x2 = self.shared_module_fr(x)  # (B, 512, H, W)
+
+        # ===== 空间对齐模块 =====
+        if self.spatial_align and self.training:
+            # 分离V和I
+            if (sub == 0).any() and (sub == 1).any():
+                x2_V = x2[sub == 0]
+                x2_I = x2[sub == 1]
+
+                # 应用空间对齐
+                x2_V_aligned, x2_I_aligned, ref_feat , offsets = self.align_module(x2_V, x2_I)
+
+                # 重新组合
+                x2_aligned = torch.zeros_like(x2)
+                x2_aligned[sub == 0] = x2_V_aligned
+                x2_aligned[sub == 1] = x2_I_aligned
+
+                # 保存对齐特征用于计算损失
+                align_feats['x2_V'] = x2_V
+                align_feats['x2_I'] = x2_I
+                align_feats['x2_V_aligned'] = x2_V_aligned
+                align_feats['x2_I_aligned'] = x2_I_aligned
+                align_feats['ref_feat'] = ref_feat
+                align_feats['offsets'] = offsets
+
+                x2 = x2_aligned
+
+        # 共享分支
+        x_sh3, x_sh4 = self.shared_module_bh(x2)  # x_sh3: (B, 1024, H, W), x_sh4: (B, 2048, H, W)
+
+        # ===== Mamba交叉注入 - Layer3 =====
+        if self.mamba_cross and self.decompose and self.training:
+            if (sub == 0).any() and (sub == 1).any():
+                x_sh3_V = x_sh3[sub == 0]
+                x_sh3_I = x_sh3[sub == 1]
+
+                x_sh3_V_mamba, x_sh3_I_mamba = self.mamba_block_layer3(x_sh3_V, x_sh3_I)
+
+                x_sh3_new = torch.zeros_like(x_sh3)
+                x_sh3_new[sub == 0] = x_sh3_V_mamba
+                x_sh3_new[sub == 1] = x_sh3_I_mamba
+                x_sh3 = x_sh3_new
+
+        # ===== Mamba交叉注入 - Layer4 =====
+        if self.mamba_cross and self.decompose and self.training:
+            if (sub == 0).any() and (sub == 1).any():
+                x_sh4_V = x_sh4[sub == 0]
+                x_sh4_I = x_sh4[sub == 1]
+
+                x_sh4_V_mamba, x_sh4_I_mamba = self.mamba_block_layer4(x_sh4_V, x_sh4_I)
+
+                x_sh4_new = torch.zeros_like(x_sh4)
+                x_sh4_new[sub == 0] = x_sh4_V_mamba
+                x_sh4_new[sub == 1] = x_sh4_I_mamba
+                x_sh4 = x_sh4_new
+
+        # 池化得到最终共享特征
         sh_pl = gem(x_sh4).squeeze()
         sh_pl = sh_pl.view(sh_pl.size(0), -1)
 
@@ -403,9 +478,9 @@ class embed_net(nn.Module):
                     sp_pl[sub == 1] = i_pl
 
         if self.decompose:
-            return sh_pl, sp_pl
+            return sh_pl, sp_pl, align_feats
         else:
-            return sh_pl, None
+            return sh_pl, None, align_feats
 
 
 def _resnet(arch, block, layers, pretrained, progress, **kwargs):

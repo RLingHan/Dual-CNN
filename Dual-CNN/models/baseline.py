@@ -208,6 +208,49 @@ def modal_centroid_loss(F1, F2, labels, modalities, margin):
     return losses.mean()
 
 
+def compute_align_loss(self, align_feats , in_norm):
+    v_aligned = align_feats['x2_V_aligned']
+    i_aligned = align_feats['x2_I_aligned']
+    ref = align_feats['ref_feat']
+    offsets = align_feats['offsets']
+
+    # --- 建议 2: 特征归一化 ---
+    # 使用 InstanceNorm 移除模态间的均值/方差差异，只比对空间结构
+    # affine=False 表示不学习额外的 scaling，单纯做归一化
+    # in_norm = nn.InstanceNorm2d(v_aligned.size(1), affine=False).to(v_aligned.device)
+
+    v_norm = in_norm(v_aligned)
+    i_norm = in_norm(i_aligned)
+    # --- 建议 1: Stop Gradient ---
+    ref_norm = in_norm(ref).detach()  # 这里的 detach 非常关键
+
+    # 1. 对齐损失 (Feature Consistency)
+    # 只取匹配的部分进行计算
+    batch_min = ref.size(0)
+    loss_v = F.mse_loss(v_norm[:batch_min], ref_norm)
+    loss_i = F.mse_loss(i_norm[:batch_min], ref_norm)
+    loss_inter = F.mse_loss(v_norm[:batch_min], i_norm[:batch_min])
+
+    # 2. 偏移量正则化 (防止产生病态扭曲)
+    # 惩罚过大的位移
+    reg_offset = torch.mean(offsets['v_global'] ** 2) + torch.mean(offsets['i_global'] ** 2)
+
+    # 3. 平滑度损失 (TV Loss: 确保相邻像素位移一致，防止拉扯撕裂)
+    def tv_loss(x):
+        dh = torch.abs(x[:, :, 1:, :] - x[:, :, :-1, :])
+        dw = torch.abs(x[:, :, :, 1:] - x[:, :, :, :-1])
+        return torch.mean(dh) + torch.mean(dw)
+
+    loss_smooth = tv_loss(offsets['v_local']) + tv_loss(offsets['i_local'])
+
+    # 综合 Loss
+    total_loss = (loss_v + loss_i + 0.5 * loss_inter) + \
+                 0.1 * reg_offset + 0.5 * loss_smooth
+
+    return total_loss
+
+
+
 class Baseline(nn.Module):
     def __init__(self, num_classes=None, drop_last_stride=False, decompose=False, **kwargs):
         super(Baseline, self).__init__()
@@ -229,6 +272,8 @@ class Baseline(nn.Module):
         nn.init.constant_(self.bn_neck_sp.bias, 0)
         self.bn_neck_sp.bias.requires_grad_(False)
 
+        self.align_instance_norm = nn.InstanceNorm2d(512, affine=False)
+
         if kwargs.get('eval', False):
             return
 
@@ -247,6 +292,10 @@ class Baseline(nn.Module):
         self.IP = kwargs.get('IP', False)
         self.fb_dt = kwargs.get('fb_dt', False)
         self.mutual_learning = kwargs.get('mutual_learning', False)
+
+        self.spatial_align = True
+        if self.spatial_align:
+            self.align_instance_norm = nn.InstanceNorm2d(512, affine=False)
 
         if self.decompose:
             self.classifier = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False) # 主分类器（共享特征）
@@ -275,7 +324,7 @@ class Baseline(nn.Module):
         #epoch = kwargs.get('epoch')
         # CNN
         #layer4输出  layer4的语义特征  相互调节后的语义特征 mask前/后模态无关特征 mask前/后特别特征
-        sh_pl, sp_pl = self.backbone(inputs,sub=sub)
+        sh_pl, sp_pl, align_feats = self.backbone(inputs,sub=sub)
         #提取特征
 
         feats = sh_pl #layer4的语义输出
@@ -293,11 +342,11 @@ class Baseline(nn.Module):
                 return feats
 
         else:
-            return self.train_forward(feats, sp_pl, labels,sub, **kwargs)
+            return self.train_forward(feats, sp_pl, align_feats, labels,sub, **kwargs)
 
 
 
-    def train_forward(self, feat, sp_pl, labels,sub, **kwargs):
+    def train_forward(self, feat, sp_pl, align_feats, labels,sub, **kwargs):
         epoch = kwargs.get('epoch')
         metric = {}
         loss = 0
@@ -347,6 +396,11 @@ class Baseline(nn.Module):
 
             loss += soft_dt
             metric.update({'soft_dt': soft_dt.data})
+
+        if self.spatial_align and "x2_V_aligned" in align_feats:
+            align_loss = compute_align_loss(align_feats, self.align_instance_norm)
+            loss += align_loss
+            metric.update({'align_loss': align_loss.data})
 
 
         # 最小化每个样本与其自身类别中心之间的距离
