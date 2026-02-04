@@ -5,7 +5,7 @@ from torch.nn import functional as F
 from torch.hub import load_state_dict_from_url
 import torch
 import math
-from extension import SpatialAlignModule,MambaCrossBlock
+from models.extension import SpatialAlignModule,MambaCrossBlock
 
 __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
            'resnet152', 'resnext50_32x4d', 'resnext101_32x8d']
