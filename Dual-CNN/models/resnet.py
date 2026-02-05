@@ -5,7 +5,7 @@ from torch.nn import functional as F
 from torch.hub import load_state_dict_from_url
 import torch
 import math
-from models.extension import MambaCrossBlock
+from models.extension import MambaCrossBlock_V2
 
 __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
            'resnet152', 'resnext50_32x4d', 'resnext101_32x8d']
@@ -379,10 +379,23 @@ class embed_net(nn.Module):
             self.mamba_cross = True
             # Mamba交叉注入模块
             if self.mamba_cross:
-                # layer3后插入：1024通道 -> 512
-                self.mamba_block_layer3 = MambaCrossBlock(in_channels=1024, d_model=512)
-                # layer4后插入：2048通道 -> 512
-                self.mamba_block_layer4 = MambaCrossBlock(in_channels=2048, d_model=512)
+                # layer3后插入：1024通道 -> d_model=512, d_state=64, headdim=64
+                self.mamba_block_layer3 = MambaCrossBlock_V2(
+                    in_channels=1024,
+                    d_model=256,  # 可以根据显存调整
+                    d_state=32,  # Mamba-2 推荐值
+                    headdim=32,  # 每个头的维度
+                    chunk_size=16  # 分块大小
+                )
+
+                # layer4后插入：2048通道
+                self.mamba_block_layer4 = MambaCrossBlock_V2(
+                    in_channels=2048,
+                    d_model=512,  # 可以调小到256节省显存
+                    d_state=64,
+                    headdim=64,
+                    chunk_size=16
+                )
 
     def forward(self, x, sub):
         batch_size = x.size(0)
