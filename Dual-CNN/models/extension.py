@@ -5,140 +5,200 @@ from torch.nn import functional as F
 import math
 
 
-# ==================== 修复版 Mamba交叉注入模块 ====================
-
-class SimplifiedMamba2Block(nn.Module):
+class MambaSSMBlock(nn.Module):
     """
-    简化版Mamba2状态空间模型 - 超级稳定版
+    完整的Mamba SSM实现
 
-    关键改进：
-    1. 使用更小的d_state避免累积误差
-    2. Layer normalization在每个关键步骤
-    3. 梯度裁剪
-    4. 更保守的数值范围
+    符合论文标准：
+    1. 时变参数Δ, B, C由输入动态生成
+    2. 对角化A矩阵（负实数）
+    3. 零阶保持离散化
+    4. 支持外部注入B/C参数
     """
 
-    def __init__(self, d_model, d_state=8, expand_factor=1.5):  # 减小expand_factor和d_state
-        super(SimplifiedMamba2Block, self).__init__()
+    def __init__(self, d_model, d_state=16, d_conv=4, expand=2):
+        super(MambaSSMBlock, self).__init__()
+
         self.d_model = d_model
         self.d_state = d_state
-        self.d_inner = int(d_model * expand_factor)
+        self.d_inner = int(expand * d_model)
+        self.d_conv = d_conv
 
         # 输入投影
         self.in_proj = nn.Linear(d_model, self.d_inner * 2, bias=False)
 
-        # SSM参数 - 更保守的初始化
-        A_init = torch.rand(self.d_inner, d_state) * 0.1 + 0.01
-        self.A_log = nn.Parameter(torch.log(A_init))
+        # 1D卷积
+        self.conv1d = nn.Conv1d(
+            in_channels=self.d_inner,
+            out_channels=self.d_inner,
+            kernel_size=d_conv,
+            bias=True,
+            groups=self.d_inner,
+            padding=d_conv - 1
+        )
 
-        self.B = nn.Parameter(torch.randn(self.d_inner, d_state) * 0.1)
-        self.C = nn.Parameter(torch.randn(self.d_inner, d_state) * 0.01)
+        # A矩阵：对角矩阵，负实数
+        A = torch.arange(1, d_state + 1, dtype=torch.float32).repeat(self.d_inner, 1)
+        self.A_log = nn.Parameter(torch.log(A))
+
+        # D：跳跃连接
+        self.D = nn.Parameter(torch.ones(self.d_inner))
+
+        # 时变参数投影（核心）
+        self.x_proj = nn.Linear(self.d_inner, self.d_state * 2 + 1, bias=False)
+
+        # dt投影
+        self.dt_proj = nn.Linear(self.d_state * 2 + 1, self.d_inner, bias=True)
 
         # 输出投影
         self.out_proj = nn.Linear(self.d_inner, d_model, bias=False)
 
-        # 多个LayerNorm用于稳定性
-        self.norm_input = nn.LayerNorm(d_model)
-        self.norm_output = nn.LayerNorm(d_model)
+        # 归一化
+        self.norm = nn.LayerNorm(d_model)
 
         self._init_weights()
 
     def _init_weights(self):
-        # 非常保守的初始化
-        nn.init.orthogonal_(self.B, gain=0.1)
-        nn.init.orthogonal_(self.C, gain=0.01)
-        nn.init.orthogonal_(self.in_proj.weight, gain=0.5)
-        nn.init.orthogonal_(self.out_proj.weight, gain=0.5)
+        nn.init.uniform_(self.D, -0.01, 0.01)
+        nn.init.xavier_uniform_(self.in_proj.weight, gain=0.5)
+        nn.init.xavier_uniform_(self.out_proj.weight, gain=0.5)
+        nn.init.xavier_uniform_(self.x_proj.weight, gain=0.5)
+        nn.init.xavier_uniform_(self.dt_proj.weight, gain=0.5)
 
-    def forward(self, x, B_override=None, freeze_B=False):
+    def forward(self, x, BC_injection=None, return_BC=False):
         """
-        x: (B, L, D)
+        前向传播
+
+        Args:
+            x: (B, L, D) 输入序列
+            BC_injection: dict with keys 'B', 'C', 'alpha'
+                - B: (B, L, D_inner, N) 外部B参数
+                - C: (B, L, D_inner, N) 外部C参数
+                - alpha: float, 混合系数
+            return_BC: 是否返回生成的B/C参数（用于传递给另一分支）
+
+        Returns:
+            output: (B, L, D)
+            BC_params: dict (if return_BC=True)
         """
-        B_batch, L, D = x.shape
+        B_batch, L, D_model = x.shape
 
-        # 输入检查
-        if torch.isnan(x).any() or torch.isinf(x).any():
-            print(f"WARNING: Invalid input to Mamba! NaN: {torch.isnan(x).any()}, Inf: {torch.isinf(x).any()}")
-            return torch.zeros_like(x)
+        # 归一化
+        x_norm = self.norm(x)
 
-        # 使用B矩阵
-        B_matrix = B_override if B_override is not None else self.B
-        if freeze_B and B_override is None:
-            B_matrix = B_matrix.detach()
+        # 1. 输入投影
+        xz = self.in_proj(x_norm)
+        x_ssm, z = xz.chunk(2, dim=-1)  # 各 (B, L, D_inner)
 
-        # 输入归一化
-        x_norm = self.norm_input(x)
+        # 2. 1D卷积
+        x_ssm = x_ssm.transpose(1, 2)  # (B, D_inner, L)
+        x_ssm = self.conv1d(x_ssm)[:, :, :L]
+        x_ssm = x_ssm.transpose(1, 2)  # (B, L, D_inner)
+        x_ssm = F.silu(x_ssm)
 
-        # 输入投影
-        x_proj = self.in_proj(x_norm)
-        x_proj = torch.clamp(x_proj, min=-5, max=5)  # 限制范围
-        x_ssm, gate = x_proj.chunk(2, dim=-1)
+        # 3. 生成时变参数
+        x_proj_out = self.x_proj(x_ssm)  # (B, L, 2N+1)
 
-        # A矩阵 - 更严格的范围
-        A = -torch.clamp(torch.exp(self.A_log), max=0.9)
+        # 分离 dt_raw, B_self, C_self
+        dt_raw, B_self, C_self = torch.split(
+            x_proj_out,
+            [1, self.d_state, self.d_state],
+            dim=-1
+        )
 
-        # 简化的SSM - 只用单向扫描避免复杂度
-        h = torch.zeros(B_batch, self.d_inner, self.d_state, device=x.device, dtype=x.dtype)
+        # dt投影
+        dt = self.dt_proj(x_proj_out)  # (B, L, D_inner)
+        dt = F.softplus(dt) + 0.001  # 保证 dt > 0
+
+        # 4. 决定使用哪个B和C
+        if BC_injection is not None:
+            # 混合自己的和外部的B/C
+            alpha = BC_injection.get('alpha', 0.5)
+            B_external = BC_injection['B']  # (B, L, D_inner, N)
+            C_external = BC_injection['C']
+
+            # 扩展B_self和C_self到相同形状
+            B_self_expanded = B_self.unsqueeze(2).expand(-1, -1, self.d_inner, -1)
+            C_self_expanded = C_self.unsqueeze(2).expand(-1, -1, self.d_inner, -1)
+
+            # 混合
+            B_used = alpha * B_self_expanded + (1 - alpha) * B_external
+            C_used = alpha * C_self_expanded + (1 - alpha) * C_external
+        else:
+            # 只用自己的B/C
+            B_used = B_self.unsqueeze(2).expand(-1, -1, self.d_inner, -1)
+            C_used = C_self.unsqueeze(2).expand(-1, -1, self.d_inner, -1)
+
+        # 5. 获取A（对角矩阵，负实数）
+        A = -torch.exp(self.A_log).float()  # (D_inner, N)
+
+        # 6. SSM递推
+        h = torch.zeros(B_batch, self.d_inner, self.d_state,
+                        device=x.device, dtype=x.dtype)
         outputs = []
 
         for t in range(L):
-            x_t = x_ssm[:, t, :]
+            x_t = x_ssm[:, t, :]  # (B, D_inner)
+            dt_t = dt[:, t, :].unsqueeze(-1)  # (B, D_inner, 1)
+            B_t = B_used[:, t, :, :]  # (B, D_inner, N)
+            C_t = C_used[:, t, :, :]  # (B, D_inner, N)
 
-            # 状态更新 - 添加epsilon避免数值问题
-            update = torch.einsum('bi,id->bid', x_t, B_matrix)
-            h = h + 0.1 * (update - h)
+            # 离散化（零阶保持）
+            dA = torch.exp(A.unsqueeze(0) * dt_t)  # (B, D_inner, N)
+            dB = (1 - dA) / (A.unsqueeze(0) + 1e-8) * B_t
 
-            # 严格裁剪
-            h = torch.clamp(h, min=-5, max=5)
+            # 状态更新
+            h = dA * h + dB * x_t.unsqueeze(-1)
+
+            # 数值稳定性
+            h = torch.clamp(h, -10, 10)
 
             # 输出
-            y_t = torch.einsum('bid,id->bi', h, self.C)
-            y_t = torch.clamp(y_t, min=-5, max=5)
+            y_t = torch.sum(C_t * h, dim=-1) + self.D * x_t
             outputs.append(y_t)
 
-        out_ssm = torch.stack(outputs, dim=1)
+        y = torch.stack(outputs, dim=1)  # (B, L, D_inner)
 
-        # 检查SSM输出
-        if torch.isnan(out_ssm).any():
-            print("WARNING: NaN in SSM output!")
-            return torch.zeros_like(x)
+        # 7. 门控
+        y = y * F.silu(z)
 
-        # 门控 - 使用tanh代替silu，更稳定
-        out = out_ssm * torch.tanh(gate)
+        # 8. 输出投影
+        output = self.out_proj(y)
 
-        # 输出投影
-        out = self.out_proj(out)
-        out = torch.clamp(out, min=-5, max=5)
-
-        # 输出归一化
-        out = self.norm_output(out)
-
-        return out
+        # 9. 返回B/C参数（如果需要）
+        if return_BC:
+            BC_params = {
+                'B': B_self.unsqueeze(2).expand(-1, -1, self.d_inner, -1),
+                'C': C_self.unsqueeze(2).expand(-1, -1, self.d_inner, -1)
+            }
+            return output, BC_params
+        else:
+            return output
 
 
 class MambaCrossBlock(nn.Module):
     """
-    Mamba交叉注入模块 - 超级稳定版
+    Mamba交叉注入模块 - 完整实现
 
-    关键改进：
-    1. 更简单的融合策略
-    2. 每步都检查NaN
-    3. 降低复杂度
+    真正实现B/C矩阵交叉注入：
+    1. 第一次前向：各自生成B/C
+    2. 交叉传递：V使用I的B/C，I使用V的B/C
+    3. 融合输出
     """
 
-    def __init__(self, in_channels, d_model=256, d_state=8, reduce_spatial=True):  # 降低d_model
+    def __init__(self, in_channels, d_model=512, d_state=16):
         super(MambaCrossBlock, self).__init__()
 
         self.in_channels = in_channels
         self.d_model = d_model
 
-        # 降维 - 添加Dropout增加鲁棒性
+        # 通道调整
         if in_channels != d_model:
             self.channel_reduce = nn.Sequential(
                 nn.Conv2d(in_channels, d_model, 1, bias=False),
                 nn.BatchNorm2d(d_model),
-                nn.ReLU(inplace=True),
-                nn.Dropout2d(0.1)  # 添加dropout
+                nn.GELU(),
+                nn.Dropout2d(0.05)
             )
             self.channel_restore = nn.Sequential(
                 nn.Conv2d(d_model, in_channels, 1, bias=False),
@@ -148,25 +208,26 @@ class MambaCrossBlock(nn.Module):
             self.channel_reduce = nn.Identity()
             self.channel_restore = nn.Identity()
 
-        # 两个独立的Mamba分支
-        self.mamba_V = SimplifiedMamba2Block(d_model, d_state)
-        self.mamba_I = SimplifiedMamba2Block(d_model, d_state)
+        # 两个独立的Mamba块
+        self.mamba_V = MambaSSMBlock(d_model, d_state, expand=2)
+        self.mamba_I = MambaSSMBlock(d_model, d_state, expand=2)
 
-        # 简化的融合权重 - 全局可学习参数
-        self.alpha = nn.Parameter(torch.tensor(0.5))  # 自己 vs 交叉的权重
+        # 可学习的融合参数
+        self.alpha_std = nn.Parameter(torch.tensor(0.6))  # 标准输出权重
+        self.alpha_cross = nn.Parameter(torch.tensor(0.5))  # 交叉时的混合系数
 
-        # 残差gate - 初始值很小
-        self.gate = nn.Parameter(torch.tensor(0.01))
+        # 残差门控
+        self.gate = nn.Parameter(torch.tensor(0.1))
 
     def feature_to_sequence(self, x):
-        """特征图 -> 序列，添加下采样减少序列长度"""
+        """特征图 -> 序列，带下采样"""
         B, C, H, W = x.shape
 
-        # 如果空间维度太大，先下采样
-        if H * W > 256:  # 序列长度限制
-            scale = int(math.sqrt((H * W) / 256))
-            x = F.adaptive_avg_pool2d(x, (H // scale, W // scale))
-            H, W = H // scale, W // scale
+        max_seq_len = 196  # 14x14
+        if H * W > max_seq_len:
+            target_size = int(math.sqrt(max_seq_len))
+            x = F.adaptive_avg_pool2d(x, (target_size, target_size))
+            H, W = target_size, target_size
 
         x = x.flatten(2).transpose(1, 2)  # (B, H*W, C)
         return x, H, W
@@ -177,116 +238,113 @@ class MambaCrossBlock(nn.Module):
         x = x.transpose(1, 2).reshape(B, C, H, W)
         return x
 
-    def safe_forward(self, func, *args, **kwargs):
-        """安全的前向传播，捕获NaN"""
-        try:
-            result = func(*args, **kwargs)
-            if torch.isnan(result).any() or torch.isinf(result).any():
-                print(f"WARNING: NaN/Inf in {func.__class__.__name__}")
-                return None
-            return result
-        except Exception as e:
-            print(f"ERROR in {func.__class__.__name__}: {e}")
-            return None
-
     def forward(self, x_V, x_I):
         """
-        x_V: RGB特征 (B_V, C, H, W)
-        x_I: IR特征 (B_I, C, H, W)
+        交叉注入前向传播
+
+        流程：
+        1. V分支生成 out_V_std 和 BC_V
+        2. I分支生成 out_I_std 和 BC_I
+        3. V使用BC_I生成 out_V_cross
+        4. I使用BC_V生成 out_I_cross
+        5. 融合输出
         """
         # 输入检查
         if torch.isnan(x_V).any() or torch.isnan(x_I).any():
-            print("WARNING: NaN in Mamba input!")
+            print("[WARNING] NaN in input!")
             return x_V, x_I
 
-        # 保存残差
-        residual_V = x_V.clone()
-        residual_I = x_I.clone()
+        residual_V = x_V
+        residual_I = x_I
 
         try:
-            # 降维
+            # === 1. 降维 ===
             x_V_reduced = self.channel_reduce(x_V)
             x_I_reduced = self.channel_reduce(x_I)
 
-            if torch.isnan(x_V_reduced).any() or torch.isnan(x_I_reduced).any():
-                print("WARNING: NaN after channel reduction!")
-                return residual_V, residual_I
-
-            # 转换为序列
+            # === 2. 转序列 ===
             seq_V, H_V, W_V = self.feature_to_sequence(x_V_reduced)
             seq_I, H_I, W_I = self.feature_to_sequence(x_I_reduced)
 
-            # 标准输出
-            out_V_std = self.safe_forward(self.mamba_V, seq_V, B_override=None, freeze_B=False)
-            out_I_std = self.safe_forward(self.mamba_I, seq_I, B_override=None, freeze_B=False)
+            # === 3. 第一次前向：生成标准输出和B/C参数 ===
+            out_V_std, BC_V = self.mamba_V(seq_V, BC_injection=None, return_BC=True)
+            out_I_std, BC_I = self.mamba_I(seq_I, BC_injection=None, return_BC=True)
 
-            if out_V_std is None or out_I_std is None:
-                print("WARNING: Mamba standard forward failed!")
+            if torch.isnan(out_V_std).any() or torch.isnan(out_I_std).any():
+                print("[WARNING] NaN in standard forward!")
                 return residual_V, residual_I
 
-            # 交叉输出（使用对方的B矩阵）
-            B_V_frozen = self.mamba_V.B.detach()
-            B_I_frozen = self.mamba_I.B.detach()
+            # === 4. 交叉前向：使用对方的B/C ===
+            alpha_cross = torch.sigmoid(self.alpha_cross)
 
-            out_V_cross = self.safe_forward(self.mamba_V, seq_V, B_override=B_I_frozen, freeze_B=True)
-            out_I_cross = self.safe_forward(self.mamba_I, seq_I, B_override=B_V_frozen, freeze_B=True)
+            # V使用I的B/C
+            BC_injection_V = {
+                'B': BC_I['B'].detach(),  # 阻断梯度避免循环依赖
+                'C': BC_I['C'].detach(),
+                'alpha': alpha_cross.item()
+            }
+            out_V_cross = self.mamba_V(seq_V, BC_injection=BC_injection_V, return_BC=False)
 
-            if out_V_cross is None or out_I_cross is None:
-                print("WARNING: Mamba cross forward failed!")
+            # I使用V的B/C
+            BC_injection_I = {
+                'B': BC_V['B'].detach(),
+                'C': BC_V['C'].detach(),
+                'alpha': alpha_cross.item()
+            }
+            out_I_cross = self.mamba_I(seq_I, BC_injection=BC_injection_I, return_BC=False)
+
+            if torch.isnan(out_V_cross).any() or torch.isnan(out_I_cross).any():
+                print("[WARNING] NaN in cross forward!")
                 return residual_V, residual_I
 
-            # 简单融合：alpha * std + (1-alpha) * cross
-            alpha_val = torch.sigmoid(self.alpha)  # 限制在[0,1]
+            # === 5. 融合标准输出和交叉输出 ===
+            alpha_std = torch.sigmoid(self.alpha_std)
 
-            out_V_fused = alpha_val * out_V_std + (1 - alpha_val) * out_V_cross
-            out_I_fused = alpha_val * out_I_std + (1 - alpha_val) * out_I_cross
+            out_V_fused = alpha_std * out_V_std + (1 - alpha_std) * out_V_cross
+            out_I_fused = alpha_std * out_I_std + (1 - alpha_std) * out_I_cross
 
-            # 检查融合结果
-            if torch.isnan(out_V_fused).any() or torch.isnan(out_I_fused).any():
-                print(f"WARNING: NaN after fusion! alpha={alpha_val.item():.4f}")
-                return residual_V, residual_I
-
-            # 转换回特征图
+            # === 6. 转回特征图 ===
             feat_V = self.sequence_to_feature(out_V_fused, H_V, W_V)
             feat_I = self.sequence_to_feature(out_I_fused, H_I, W_I)
 
-            # 恢复到原始空间分辨率
+            # 上采样到原始尺寸
             if feat_V.shape[2:] != x_V.shape[2:]:
-                feat_V = F.interpolate(feat_V, size=x_V.shape[2:], mode='bilinear', align_corners=False)
+                feat_V = F.interpolate(feat_V, size=x_V.shape[2:],
+                                       mode='bilinear', align_corners=False)
             if feat_I.shape[2:] != x_I.shape[2:]:
-                feat_I = F.interpolate(feat_I, size=x_I.shape[2:], mode='bilinear', align_corners=False)
+                feat_I = F.interpolate(feat_I, size=x_I.shape[2:],
+                                       mode='bilinear', align_corners=False)
 
-            # 升维
+            # === 7. 升维 ===
             feat_V = self.channel_restore(feat_V)
             feat_I = self.channel_restore(feat_I)
 
             if torch.isnan(feat_V).any() or torch.isnan(feat_I).any():
-                print("WARNING: NaN after channel restoration!")
+                print("[WARNING] NaN after channel restore!")
                 return residual_V, residual_I
 
-            # 残差连接（非常小的gate）
+            # === 8. 残差连接 ===
             gate_val = torch.sigmoid(self.gate)
             out_V = residual_V + gate_val * feat_V
             out_I = residual_I + gate_val * feat_I
 
             # 最终检查
             if torch.isnan(out_V).any() or torch.isnan(out_I).any():
-                print(f"WARNING: NaN in final output! gate={gate_val.item():.6f}")
+                print(f"[WARNING] NaN in final output! gate={gate_val.item():.6f}")
                 return residual_V, residual_I
 
             return out_V, out_I
 
         except Exception as e:
-            print(f"ERROR in MambaCrossBlock: {e}")
+            print(f"[ERROR] Exception in MambaCrossBlock: {e}")
             import traceback
             traceback.print_exc()
             return residual_V, residual_I
 
 
+# ==================== 轻量级交叉注意力（备用） ====================
 class LightweightCrossAttention(nn.Module):
-    """
-    轻量级交叉注意力（暂未使用，保留供未来扩展）
-    """
+    """备用的轻量级交叉注意力"""
 
     def __init__(self, d_model, num_heads=4, reduction=2):
         super(LightweightCrossAttention, self).__init__()
@@ -307,9 +365,6 @@ class LightweightCrossAttention(nn.Module):
         self.scale = self.head_dim ** -0.5
 
     def forward(self, x1, x2):
-        """
-        x1, x2: (B, L, D)
-        """
         B, L, D = x1.shape
 
         x1_reduced = self.reduce(x1)
