@@ -236,16 +236,17 @@ class SimplifiedMamba2Block_V2(nn.Module):
         """
         单个 chunk 内的扫描（Mamba-2 风格的状态更新）
 
-        x: [B, chunk_size, nheads, headdim]
-        h_init: [B, nheads, headdim, N] - 初始隐藏状态
-        A: [nheads]
-        B: [B, chunk_size, 1, N]
-        C: [B, chunk_size, 1, N]
-        dt: [B, chunk_size, nheads, 1]
+        参数说明：
+            x: [B, chunk_size, nheads, headdim] - 输入序列
+            h_init: [B, nheads, headdim, N] - 初始隐藏状态
+            A: [nheads] - 状态转移参数
+            B: [B, chunk_size, 1, N] - 输入投影矩阵
+            C: [B, chunk_size, 1, N] - 输出投影矩阵
+            dt: [B, chunk_size, nheads, 1] - 时间步长
 
         返回:
-        - y: [B, chunk_size, nheads, headdim]
-        - h_final: [B, nheads, headdim, N]
+            y: [B, chunk_size, nheads, headdim] - 输出序列
+            h: [B, nheads, headdim, N] - 最终隐藏状态
         """
         B_batch, chunk_size, nheads, headdim = x.shape
         N = B.shape[-1]
@@ -261,30 +262,34 @@ class SimplifiedMamba2Block_V2(nn.Module):
         outputs = []
 
         for t in range(chunk_size):
+            # 提取当前时间步的数据
             x_t = x[:, t]  # [B, nheads, headdim]
-            B_t = B[:, t]  # [B, 1, N]
-            C_t = C[:, t]  # [B, 1, N]
+            B_t = B[:, t, 0, :]  # [B, N] ← 关键修复！直接索引到 [B, N]
+            C_t = C[:, t, 0, :]  # [B, N]
             dA_t = dA[:, t]  # [B, nheads, 1]
 
             # ============ Mamba-2 的状态更新公式 ============
-            # dBx = dt * B * x
-            # dBx: [B, nheads, headdim, N]
-            dBx = torch.einsum('bhp,bhn->bhpn', x_t, B_t.squeeze(1))
+            # 计算 dBx = dt * B * x
+            # x_t: [B, nheads, headdim], B_t: [B, N]
+            # 结果: [B, nheads, headdim, N]
+            dBx = torch.einsum('bhp,bn->bhpn', x_t, B_t)
 
-            # h_new = dA * h + dBx
-            h = dA_t.unsqueeze(-1).unsqueeze(-1) * h + dBx
+            # 状态更新: h_new = dA * h + dBx
+            # dA_t: [B, nheads, 1] -> 需要扩展到 [B, nheads, 1, 1]
+            h = dA_t.unsqueeze(-1) * h + dBx  # 广播机制会自动处理
 
-            # 裁剪防止爆炸
+            # 安全裁剪
             h = torch.clamp(h, min=-10, max=10)
 
-            # ============ 输出 ============
+            # ============ 计算输出 ============
             # y = C * h
-            # C: [B, 1, N], h: [B, nheads, headdim, N] -> [B, nheads, headdim]
-            y_t = torch.einsum('bhn,bhpn->bhp', C_t.squeeze(1), h)
+            # C_t: [B, N], h: [B, nheads, headdim, N]
+            # 结果: [B, nheads, headdim]
+            y_t = torch.einsum('bn,bhpn->bhp', C_t, h)
 
             outputs.append(y_t)
 
-        # 堆叠输出
+        # 堆叠所有时间步的输出
         y = torch.stack(outputs, dim=1)  # [B, chunk_size, nheads, headdim]
 
         return y, h
