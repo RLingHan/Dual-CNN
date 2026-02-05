@@ -395,35 +395,32 @@ class Baseline(nn.Module):
 
         if self.classification:
             logits = self.classifier(feat)
+            _, intra_bg = Bg_kl(logits[sub == 0], logits[sub == 1])  # 共享和红外对齐
+            _, intra_Sm = Sm_kl(logits[sub == 0], logits[sub == 1], labels)  # 模态互相学习
+            bg_loss = intra_bg
+            sm_kl_loss = intra_Sm
             if self.decompose:
                 if self.CSA1:
                     _, inter_bg_v = Bg_kl(logits[sub == 0], logits_sp[sub == 0]) #强制共享可见光 Logits 模仿特定可见光 Logits
                     _, inter_bg_i = Bg_kl(logits[sub == 1], logits_sp[sub == 1]) #强制共享红外光 Logits 模仿特定可见光 Logits
-
-                    _, intra_bg = Bg_kl(logits[sub == 0], logits[sub == 1]) #共享和红外对齐
-
+                    inter_bg = inter_bg_v + inter_bg_i
                     if feat.size(0) == bb:
-                        bg_loss = intra_bg + (inter_bg_v + inter_bg_i) * 0.8  # intra_bg + (inter_bg_v + inter_bg_i) * 0.7
-
+                        bg_loss += inter_bg * 0.8
                     else:
-                        bg_loss = intra_bg + (inter_bg_v + inter_bg_i) * 0.3
-                    loss += bg_loss
-                    metric.update({'bg_kl': bg_loss.data})
+                        bg_loss += inter_bg * 0.3
 
                 if self.CSA2:
                     _, inter_Sm_v = Sm_kl(logits[sub == 0], logits_sp[sub == 0], labels) # sh Logits 在批次内语义结构上模仿sp Logits
                     _, inter_Sm_i = Sm_kl(logits[sub == 1], logits_sp[sub == 1], labels)
                     inter_Sm = inter_Sm_v + inter_Sm_i # 隐式蒸馏
-                    _, intra_Sm = Sm_kl(logits[sub == 0], logits[sub == 1], labels) #模态互相学习
-
                     if feat.size(0) == bb:
-                        sm_kl_loss = intra_Sm + inter_Sm * 0.8
-
+                        sm_kl_loss += inter_Sm * 0.8
                     else:
-                        sm_kl_loss = intra_Sm + inter_Sm * 0.3
-                    loss += sm_kl_loss
-                    metric.update({'sm_kl': sm_kl_loss.data})
+                        sm_kl_loss += inter_Sm * 0.3
 
+            loss += (bg_loss + sm_kl_loss)
+            metric.update({'bg_kl': bg_loss.data})
+            metric.update({'sm_kl': sm_kl_loss.data})
             cls_loss = self.id_loss(logits.float(), labels) # 基础识别id的能力
             loss += cls_loss
             metric.update({'acc': calc_acc(logits.data, labels), 'id_loss': cls_loss.data})
