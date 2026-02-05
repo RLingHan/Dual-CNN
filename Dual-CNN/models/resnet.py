@@ -382,19 +382,19 @@ class embed_net(nn.Module):
                 # layer3后插入：1024通道 -> d_model=512, d_state=64, headdim=64
                 self.mamba_block_layer3 = MambaCrossBlock_V2(
                     in_channels=1024,
-                    d_model=256,  # 可以根据显存调整
+                    d_model=128,  # 可以根据显存调整
                     d_state=32,  # Mamba-2 推荐值
                     headdim=32,  # 每个头的维度
-                    chunk_size=16  # 分块大小
+                    chunk_size=8  # 分块大小
                 )
 
                 # layer4后插入：2048通道
                 self.mamba_block_layer4 = MambaCrossBlock_V2(
                     in_channels=2048,
-                    d_model=512,  # 可以调小到256节省显存
-                    d_state=64,
-                    headdim=64,
-                    chunk_size=16
+                    d_model=128,  # 可以调小到256节省显存
+                    d_state=32,
+                    headdim=32,
+                    chunk_size=8
                 )
 
     def forward(self, x, sub):
