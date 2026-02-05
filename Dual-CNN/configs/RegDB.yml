@@ -13,7 +13,7 @@ dataset: regdb
 # loss
 bg_kl: true
 sm_kl: true
-decompose: true
+decompose: false
 IP: true
 distalign: true
 classification: true
