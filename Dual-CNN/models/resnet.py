@@ -477,7 +477,6 @@ class embed_net(nn.Module):
         # 池化得到最终共享特征
         sh_pl = gem(x_sh4).squeeze()
         sh_pl = sh_pl.view(sh_pl.size(0), -1)
-        sh_pl = self.dropout(sh_pl)
 
         if self.decompose:
             sp_pl = torch.zeros_like(sh_pl)
