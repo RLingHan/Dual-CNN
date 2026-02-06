@@ -370,7 +370,7 @@ class embed_net(nn.Module):
 
         self.v_cbam = cbam(512)
         self.i_cbam = cbam(512)
-        self.alpha = nn.Parameter(torch.tensor(0), requires_grad=True)
+        self.alpha = nn.Parameter(torch.tensor(0.0), requires_grad=True)
 
 
         self.V_bh = Special_module_bh(drop_last_stride=drop_last_stride)
