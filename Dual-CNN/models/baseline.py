@@ -213,27 +213,24 @@ class ModalityAlignmentLoss(nn.Module):
         super().__init__()
         self.temp = temperature
 
-    def forward(self, v_feat, i_feat, labels):
-        # v_feat: (N, D) 可见光特征
-        # i_feat: (N, D) 红外特征
-        # labels: (N,) 身份标签
-
-        # L2归一化
+    def forward(self, v_feat, i_feat, v_labels, i_labels):
+        # 此时 v_feat 和 v_labels 都是 N=30
         v_feat = F.normalize(v_feat, dim=1)
         i_feat = F.normalize(i_feat, dim=1)
 
-        # 计算相似度矩阵
-        sim = torch.mm(v_feat, i_feat.t()) / self.temp  # (N, N)
+        # sim 形状为 (30, 30)
+        sim = torch.mm(v_feat, i_feat.t()) / self.temp
 
-        # 构造正样本mask(同ID为正样本)
-        labels_eq = labels.unsqueeze(1) == labels.unsqueeze(0)
+        # v_labels.unsqueeze(1) -> (30, 1)
+        # i_labels.unsqueeze(0) -> (1, 30)
+        labels_eq = v_labels.unsqueeze(1) == i_labels.unsqueeze(0)
 
-        # InfoNCE损失
         exp_sim = torch.exp(sim)
         pos_sum = (exp_sim * labels_eq.float()).sum(1)
         all_sum = exp_sim.sum(1)
-        loss = -torch.log(pos_sum / all_sum).mean()
 
+        # 增加 1e-8 防止 log(0)
+        loss = -torch.log(pos_sum / (all_sum + 1e-8)).mean()
         return loss
 
 
@@ -347,7 +344,10 @@ class Baseline(nn.Module):
             metric.update({'tri': trip_loss.data})
 
         if self.align:
-            align_loss = self.modality_align_loss(feat[sub == 0], feat[sub == 1], labels)
+            v_labels = labels[sub == 0]
+            i_labels = labels[sub == 1]
+
+            align_loss = self.modality_align_loss(feat[sub == 0], feat[sub == 1], v_labels,i_labels)
             align_loss = align_loss * 0.2
             loss += align_loss
             metric.update({'align_loss': align_loss.data})
