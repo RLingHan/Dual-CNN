@@ -381,29 +381,32 @@ class embed_net(nn.Module):
 
         self.dropout = nn.Dropout(0.2)
 
+        self.mamba_cross = True
+
+
+        if self.mamba_cross:
+            # layer2后插入：512通道
+            self.mamba_block_layer3 = MambaCrossBlock_V2(
+                in_channels=512,
+                d_model=128,  # 可以根据显存调整
+                d_state=32,  # Mamba-2 推荐值
+                headdim=32,  # 每个头的维度
+                chunk_size=8  # 分块大小
+            )
+
+            # # layer4后插入：2048通道
+            # self.mamba_block_layer4 = MambaCrossBlock_V2(
+            #     in_channels=2048,
+            #     d_model=128,  # 可以调小到256节省显存
+            #     d_state=32,
+            #     headdim=32,
+            #     chunk_size=8
+            # )
+
         if self.decompose:
             self.mask1 = Mask(2048)
             self.mask2 = Mask(2048)
-            self.mamba_cross = True
-            # Mamba交叉注入模块
-            if self.mamba_cross:
-                # layer3后插入：1024通道 -> d_model=512, d_state=64, headdim=64
-                self.mamba_block_layer3 = MambaCrossBlock_V2(
-                    in_channels=1024,
-                    d_model=128,  # 可以根据显存调整
-                    d_state=32,  # Mamba-2 推荐值
-                    headdim=32,  # 每个头的维度
-                    chunk_size=8  # 分块大小
-                )
 
-                # layer4后插入：2048通道
-                self.mamba_block_layer4 = MambaCrossBlock_V2(
-                    in_channels=2048,
-                    d_model=128,  # 可以调小到256节省显存
-                    d_state=32,
-                    headdim=32,
-                    chunk_size=8
-                )
 
     def forward(self, x, sub):
         batch_size = x.size(0)
@@ -445,34 +448,30 @@ class embed_net(nn.Module):
             i_ca, i_sa = self.i_cbam(x_i)
             x2[sub == 1] = x_i * i_ca * i_sa
 
+        # ===== Mamba交叉注入 - Layer3 =====
+        if self.mamba_cross and self.training:
+            if has_visible and has_infrared:  # Mamba需要双模态
+                x_3_V_mamba, x_3_I_mamba = self.mamba_block_layer3(x2[sub == 0], x2[sub == 1])
+                x_mamba = torch.zeros_like(x2)
+                x_mamba[sub == 0] = x_3_V_mamba
+                x_mamba[sub == 1] = x_3_I_mamba
+                x2 = x_mamba
+
         # 共享分支
         x_sh3, x_sh4 = self.shared_module_bh(x2)
 
-        # ===== Mamba交叉注入 - Layer3 =====
-        if self.mamba_cross and self.decompose and self.training:
-            if has_visible and has_infrared:  # Mamba需要双模态
-                x_sh3_V = x_sh3[sub == 0]
-                x_sh3_I = x_sh3[sub == 1]
-
-                x_sh3_V_mamba, x_sh3_I_mamba = self.mamba_block_layer3(x_sh3_V, x_sh3_I)
-
-                x_sh3_new = torch.zeros_like(x_sh3)
-                x_sh3_new[sub == 0] = x_sh3_V_mamba
-                x_sh3_new[sub == 1] = x_sh3_I_mamba
-                x_sh3 = x_sh3_new
-
-        # ===== Mamba交叉注入 - Layer4 =====
-        if self.mamba_cross and self.decompose and self.training:
-            if has_visible and has_infrared:  # Mamba需要双模态
-                x_sh4_V = x_sh4[sub == 0]
-                x_sh4_I = x_sh4[sub == 1]
-
-                x_sh4_V_mamba, x_sh4_I_mamba = self.mamba_block_layer4(x_sh4_V, x_sh4_I)
-
-                x_sh4_new = torch.zeros_like(x_sh4)
-                x_sh4_new[sub == 0] = x_sh4_V_mamba
-                x_sh4_new[sub == 1] = x_sh4_I_mamba
-                x_sh4 = x_sh4_new
+        # # ===== Mamba交叉注入 - Layer4 =====
+        # if self.mamba_cross and self.training:
+        #     if has_visible and has_infrared:  # Mamba需要双模态
+        #         x_sh4_V = x_sh4[sub == 0]
+        #         x_sh4_I = x_sh4[sub == 1]
+        #
+        #         x_sh4_V_mamba, x_sh4_I_mamba = self.mamba_block_layer4(x_sh4_V, x_sh4_I)
+        #
+        #         x_sh4_new = torch.zeros_like(x_sh4)
+        #         x_sh4_new[sub == 0] = x_sh4_V_mamba
+        #         x_sh4_new[sub == 1] = x_sh4_I_mamba
+        #         x_sh4 = x_sh4_new
 
         # 池化得到最终共享特征
         sh_pl = gem(x_sh4).squeeze()
