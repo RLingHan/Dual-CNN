@@ -12,7 +12,7 @@ dataset: sysu
 # loss
 bg_kl: true
 sm_kl: true
-decompose: true
+decompose: false
 distalign: true
 IP: true
 classification: true
