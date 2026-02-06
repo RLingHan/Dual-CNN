@@ -252,7 +252,7 @@ class Baseline(nn.Module):
 
         if self.decompose:
             self.classifier = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False) # 主分类器（共享特征）
-            self.classifier_sp = nn.Linear(self.base_dim, num_classes, bias=False) # 特有模态分类器
+            self.classifier_sp = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False) # 特有模态分类器
             self.D_special = Discrimination() # 判别当前特征来自哪种模态
             self.C_sp_f = nn.Linear(self.base_dim, num_classes, bias=False) # 用于熵边界约束
 

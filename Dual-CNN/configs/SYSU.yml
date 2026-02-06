@@ -43,7 +43,7 @@ modality_attention: 0
 lr: 0.00035
 optimizer: adam
 num_epoch: 120 #160
-lr_step: [40, 80] #[55, 95]
+lr_step: [50, 80] #[55, 95]
 
 # augmentation
 random_flip: true

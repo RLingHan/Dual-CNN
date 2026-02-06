@@ -6,6 +6,7 @@ from torch.hub import load_state_dict_from_url
 import torch
 import math
 from models.extension import MambaCrossBlock_V2
+from layers.module.CBAM import cbam
 
 __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
            'resnet152', 'resnext50_32x4d', 'resnext101_32x8d']
@@ -274,7 +275,6 @@ class Shared_module_fr(nn.Module):
         x = self.model_sh_fr.maxpool(x)
         x = self.model_sh_fr.layer1(x)
         x = self.model_sh_fr.layer2(x)
-        # x = self.model_sh_fr.layer3(x)
         return x
 
 class Special_module(nn.Module):
@@ -367,6 +367,12 @@ class embed_net(nn.Module):
 
         self.shared_module_fr = Shared_module_fr(drop_last_stride=drop_last_stride)
         self.shared_module_bh = Shared_module_bh(drop_last_stride=drop_last_stride)
+
+        self.v_cbam = cbam(512)
+        self.i_cbam = cbam(512)
+        self.alpha = nn.Parameter(torch.tensor(0), requires_grad=True)
+
+
         self.V_bh = Special_module_bh(drop_last_stride=drop_last_stride)
         self.I_bh = Special_module_bh(drop_last_stride=drop_last_stride)
 
@@ -401,6 +407,17 @@ class embed_net(nn.Module):
         batch_size = x.size(0)
 
         x2 = self.shared_module_fr(x)  # (B, 512, H, W)
+
+        v_ca,v_sa = self.v_cbam(x2[sub == 0])
+        x2[sub == 0] = x2[sub == 0] * v_ca * v_sa
+        i_ca,i_sa = self.i_cbam(x2[sub == 1])
+        x2[sub == 1] = x2[sub == 1] * i_ca * i_sa
+        alpha = nn.Sigmoid(self.alpha)
+        out_v = x2[sub == 0] + alpha * x2[sub == 0] * i_ca * i_sa  # 可见光获得红外的"视角"
+        out_i = x2[sub == 1] + alpha * x2[sub == 1] * v_ca * v_sa  # 红外获得可见光的"视角"
+        x2[sub == 0] = out_v
+        x2[sub == 1] = out_i
+
         # 共享分支
         x_sh3, x_sh4 = self.shared_module_bh(x2)  # x_sh3: (B, 1024, H, W), x_sh4: (B, 2048, H, W)
 

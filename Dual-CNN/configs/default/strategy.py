@@ -76,7 +76,7 @@ strategy_cfg.drop_last_stride = False  # 不禁用最后一层的步长
 strategy_cfg.pattern_attention = False # 禁用模式注意力机制
 strategy_cfg.modality_attention = 0    # 模态注意力机制模式（0表示禁用）
 strategy_cfg.mutual_learning = False   # 禁用互学习
-strategy_cfg.rerank = True            # 禁用重排序后处理
+strategy_cfg.rerank = False            # 禁用重排序后处理
 strategy_cfg.num_parts = 6             # 图像分割的部分数量
 
 # --------------------------
