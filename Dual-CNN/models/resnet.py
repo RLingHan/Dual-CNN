@@ -405,27 +405,50 @@ class embed_net(nn.Module):
 
     def forward(self, x, sub):
         batch_size = x.size(0)
-
         x2 = self.shared_module_fr(x)  # (B, 512, H, W)
 
-        v_ca,v_sa = self.v_cbam(x2[sub == 0])
-        x2[sub == 0] = x2[sub == 0] * v_ca * v_sa
-        i_ca,i_sa = self.i_cbam(x2[sub == 1])
-        x2[sub == 1] = x2[sub == 1] * i_ca * i_sa
-        alpha = torch.sigmoid(self.alpha)
-        out_v = x2[sub == 0] + alpha * x2[sub == 0] * i_ca * i_sa  # 可见光获得红外的"视角"
-        out_i = x2[sub == 1] + alpha * x2[sub == 1] * v_ca * v_sa  # 红外获得可见光的"视角"
-        x2_new = torch.zeros_like(x2)
-        x2_new[sub == 0] = out_v
-        x2_new[sub == 1] = out_i
-        x2 = x2_new
+        # 检查模态存在性
+        has_visible = (sub == 0).any()
+        has_infrared = (sub == 1).any()
+
+        # ===== 跨模态CBAM融合 =====
+        if has_visible and has_infrared:
+            # 情况1:双模态都存在 -> 跨模态融合
+            x_v = x2[sub == 0]
+            x_i = x2[sub == 1]
+            v_ca, v_sa = self.v_cbam(x_v)
+            i_ca, i_sa = self.i_cbam(x_i)
+            # 应用自身注意力
+            x_v = x_v * v_ca * v_sa
+            x_i = x_i * i_ca * i_sa
+            # 跨模态互补增强
+            alpha = torch.sigmoid(self.alpha)
+            out_v = x_v + alpha * x_v * i_ca * i_sa
+            out_i = x_i + alpha * x_i * v_ca * v_sa
+            # 重组
+            x2_new = torch.zeros_like(x2)
+            x2_new[sub == 0] = out_v
+            x2_new[sub == 1] = out_i
+            x2 = x2_new
+
+        elif has_visible:
+            # 情况2:只有可见光 -> 只用自己的CBAM
+            x_v = x2[sub == 0]
+            v_ca, v_sa = self.v_cbam(x_v)
+            x2[sub == 0] = x_v * v_ca * v_sa
+
+        elif has_infrared:
+            # 情况3:只有红外 -> 只用自己的CBAM
+            x_i = x2[sub == 1]
+            i_ca, i_sa = self.i_cbam(x_i)
+            x2[sub == 1] = x_i * i_ca * i_sa
 
         # 共享分支
-        x_sh3, x_sh4 = self.shared_module_bh(x2)  # x_sh3: (B, 1024, H, W), x_sh4: (B, 2048, H, W)
+        x_sh3, x_sh4 = self.shared_module_bh(x2)
 
         # ===== Mamba交叉注入 - Layer3 =====
         if self.mamba_cross and self.decompose and self.training:
-            if (sub == 0).any() and (sub == 1).any():
+            if has_visible and has_infrared:  # Mamba需要双模态
                 x_sh3_V = x_sh3[sub == 0]
                 x_sh3_I = x_sh3[sub == 1]
 
@@ -438,7 +461,7 @@ class embed_net(nn.Module):
 
         # ===== Mamba交叉注入 - Layer4 =====
         if self.mamba_cross and self.decompose and self.training:
-            if (sub == 0).any() and (sub == 1).any():
+            if has_visible and has_infrared:  # Mamba需要双模态
                 x_sh4_V = x_sh4[sub == 0]
                 x_sh4_I = x_sh4[sub == 1]
 
@@ -456,21 +479,21 @@ class embed_net(nn.Module):
         if self.decompose:
             sp_pl = torch.zeros_like(sh_pl)
 
-            if (sub == 0).any():
+            if has_visible:
                 x_v3, x_v4 = self.V_bh(x2[sub == 0])
                 v_m = self.mask1(x_v4)
                 x_v4 = v_m * x_v4
                 v_pl = gem(x_v4).squeeze()
-                if v_pl.numel() > 0:  # ← 添加这个检查
+                if v_pl.numel() > 0:
                     v_pl = v_pl.view(v_pl.size(0), -1)
                     sp_pl[sub == 0] = v_pl
 
-            if (sub == 1).any():
+            if has_infrared:
                 x_i3, x_i4 = self.I_bh(x2[sub == 1])
                 x_m = self.mask2(x_i4)
                 x_i4 = x_m * x_i4
                 i_pl = gem(x_i4).squeeze()
-                if i_pl.numel() > 0:  # ← 添加这个检查
+                if i_pl.numel() > 0:
                     i_pl = i_pl.view(i_pl.size(0), -1)
                     sp_pl[sub == 1] = i_pl
 
