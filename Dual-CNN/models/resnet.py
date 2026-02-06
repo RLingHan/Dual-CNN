@@ -379,7 +379,7 @@ class embed_net(nn.Module):
         self.decompose = decompose
         self.mamba_cross = mamba_cross
 
-        self.dropout = nn.Dropout(0.5)
+        self.dropout = nn.Dropout(0.2)
 
         if self.decompose:
             self.mask1 = Mask(2048)
