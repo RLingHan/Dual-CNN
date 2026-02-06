@@ -412,11 +412,13 @@ class embed_net(nn.Module):
         x2[sub == 0] = x2[sub == 0] * v_ca * v_sa
         i_ca,i_sa = self.i_cbam(x2[sub == 1])
         x2[sub == 1] = x2[sub == 1] * i_ca * i_sa
-        alpha = nn.Sigmoid(self.alpha)
+        alpha = torch.sigmoid(self.alpha)
         out_v = x2[sub == 0] + alpha * x2[sub == 0] * i_ca * i_sa  # 可见光获得红外的"视角"
         out_i = x2[sub == 1] + alpha * x2[sub == 1] * v_ca * v_sa  # 红外获得可见光的"视角"
-        x2[sub == 0] = out_v
-        x2[sub == 1] = out_i
+        x2_new = torch.zeros_like(x2)
+        x2_new[sub == 0] = out_v
+        x2_new[sub == 1] = out_i
+        x2 = x2_new
 
         # 共享分支
         x_sh3, x_sh4 = self.shared_module_bh(x2)  # x_sh3: (B, 1024, H, W), x_sh4: (B, 2048, H, W)
