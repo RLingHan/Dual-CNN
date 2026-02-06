@@ -208,6 +208,33 @@ def modal_centroid_loss(F1, F2, labels, modalities, margin):
     return losses.mean()
 
 
+class ModalityAlignmentLoss(nn.Module):
+    def __init__(self, temperature=0.07):
+        super().__init__()
+        self.temp = temperature
+
+    def forward(self, v_feat, i_feat, labels):
+        # v_feat: (N, D) 可见光特征
+        # i_feat: (N, D) 红外特征
+        # labels: (N,) 身份标签
+
+        # L2归一化
+        v_feat = F.normalize(v_feat, dim=1)
+        i_feat = F.normalize(i_feat, dim=1)
+
+        # 计算相似度矩阵
+        sim = torch.mm(v_feat, i_feat.t()) / self.temp  # (N, N)
+
+        # 构造正样本mask(同ID为正样本)
+        labels_eq = labels.unsqueeze(1) == labels.unsqueeze(0)
+
+        # InfoNCE损失
+        exp_sim = torch.exp(sim)
+        pos_sum = (exp_sim * labels_eq.float()).sum(1)
+        all_sum = exp_sim.sum(1)
+        loss = -torch.log(pos_sum / all_sum).mean()
+
+        return loss
 
 
 class Baseline(nn.Module):
@@ -239,6 +266,9 @@ class Baseline(nn.Module):
         self.center_cluster = kwargs.get('center_cluster', False)
         self.center_loss = kwargs.get('center', False)
         self.margin = kwargs.get('margin', 0.3)
+
+        self.modality_align_loss = ModalityAlignmentLoss()
+        self.align = True
 
         # 消融实验
         self.CSA1 = kwargs.get('bg_kl', False)
@@ -304,6 +334,8 @@ class Baseline(nn.Module):
         metric = {}
         loss = 0
 
+
+
         if self.triplet:
 
             triplet_loss, _, _, _ = self.triplet_loss(feat.float(), labels) # 共享特征
@@ -313,6 +345,12 @@ class Baseline(nn.Module):
                 trip_loss += triplet_loss_im
             loss += trip_loss
             metric.update({'tri': trip_loss.data})
+
+        if self.align:
+            align_loss = self.modality_align_loss(feat[sub == 0], feat[sub == 1], labels)
+            align_loss = align_loss * 0.2
+            loss += align_loss
+            metric.update({'align_loss': align_loss.data})
 
         bb = 120  #90
 

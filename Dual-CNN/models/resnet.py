@@ -370,7 +370,7 @@ class embed_net(nn.Module):
 
         self.v_cbam = cbam(512)
         self.i_cbam = cbam(512)
-        self.alpha = nn.Parameter(torch.tensor(0.0), requires_grad=True)
+        self.alpha = nn.Parameter(torch.tensor(-2.0), requires_grad=True)
 
 
         self.V_bh = Special_module_bh(drop_last_stride=drop_last_stride)
@@ -378,6 +378,8 @@ class embed_net(nn.Module):
 
         self.decompose = decompose
         self.mamba_cross = mamba_cross
+
+        self.dropout = nn.Dropout(0.5)
 
         if self.decompose:
             self.mask1 = Mask(2048)
@@ -475,6 +477,7 @@ class embed_net(nn.Module):
         # 池化得到最终共享特征
         sh_pl = gem(x_sh4).squeeze()
         sh_pl = sh_pl.view(sh_pl.size(0), -1)
+        sh_pl = self.dropout(sh_pl)
 
         if self.decompose:
             sp_pl = torch.zeros_like(sh_pl)
