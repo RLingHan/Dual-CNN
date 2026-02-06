@@ -44,6 +44,6 @@ class cbam(nn.Module):
         self.sa = SpatialAttention()
 
     def forward(self, x):
-        x = self.ca(x) * x
-        x = self.sa(x) * x
-        return x
+        ca = self.ca(x)
+        sa = self.sa(x)
+        return ca, sa
