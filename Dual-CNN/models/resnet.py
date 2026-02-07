@@ -371,6 +371,7 @@ class embed_net(nn.Module):
         self.v_cbam = cbam(1024)
         self.i_cbam = cbam(1024)
         self.alpha = nn.Parameter(torch.tensor(-0.85), requires_grad=True)
+        self.beta = nn.Parameter(torch.tensor(-0.85), requires_grad=True)
 
 
         self.V_bh = Special_module_bh(drop_last_stride=drop_last_stride)
@@ -431,8 +432,9 @@ class embed_net(nn.Module):
 
             # 跨模态互补增强
             alpha = torch.sigmoid(self.alpha)
-            out_v = x_v + alpha * x_v * i_ca * i_sa
-            out_i = x_i + alpha * x_i * v_ca * v_sa
+            beta = torch.sigmoid(self.beta)
+            out_v = (1- alpha) * x_v + alpha * x_v * i_ca * i_sa
+            out_i = (1- beta) * x_i + beta * x_i * v_ca * v_sa
 
             # 重组
             x_sh3_new = torch.zeros_like(x_sh3)
