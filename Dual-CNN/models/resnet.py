@@ -368,9 +368,9 @@ class embed_net(nn.Module):
         self.shared_module_fr = Shared_module_fr(drop_last_stride=drop_last_stride)
         self.shared_module_bh = Shared_module_bh(drop_last_stride=drop_last_stride)
 
-        self.v_cbam = cbam(512)
-        self.i_cbam = cbam(512)
-        self.alpha = nn.Parameter(torch.tensor(-2.0), requires_grad=True)
+        self.v_cbam = cbam(1024)
+        self.i_cbam = cbam(1024)
+        self.alpha = nn.Parameter(torch.tensor(-0.85), requires_grad=True)
 
 
         self.V_bh = Special_module_bh(drop_last_stride=drop_last_stride)
@@ -379,9 +379,7 @@ class embed_net(nn.Module):
         self.decompose = decompose
         self.mamba_cross = mamba_cross
 
-        self.dropout = nn.Dropout(0.2)
-
-        self.mamba_cross = True
+        self.mamba_cross = False
 
 
         if self.mamba_cross:
@@ -416,63 +414,51 @@ class embed_net(nn.Module):
         has_visible = (sub == 0).any()
         has_infrared = (sub == 1).any()
 
+        x_sh3 = self.shared_module_bh.model_sh_bh.layer3(x2)
+
         # ===== 跨模态CBAM融合 =====
         if has_visible and has_infrared:
-            # 情况1:双模态都存在 -> 跨模态融合
-            x_v = x2[sub == 0]
-            x_i = x2[sub == 1]
+            # 双模态 -> 跨模态融合
+            x_v = x_sh3[sub == 0]
+            x_i = x_sh3[sub == 1]
+
             v_ca, v_sa = self.v_cbam(x_v)
             i_ca, i_sa = self.i_cbam(x_i)
+
             # 应用自身注意力
             x_v = x_v * v_ca * v_sa
             x_i = x_i * i_ca * i_sa
+
             # 跨模态互补增强
             alpha = torch.sigmoid(self.alpha)
             out_v = x_v + alpha * x_v * i_ca * i_sa
             out_i = x_i + alpha * x_i * v_ca * v_sa
+
             # 重组
-            x2_new = torch.zeros_like(x2)
-            x2_new[sub == 0] = out_v
-            x2_new[sub == 1] = out_i
-            x2 = x2_new
+            x_sh3_new = torch.zeros_like(x_sh3)
+            x_sh3_new[sub == 0] = out_v
+            x_sh3_new[sub == 1] = out_i
+            x_sh3 = x_sh3_new
 
         elif has_visible:
-            # 情况2:只有可见光 -> 只用自己的CBAM
-            x_v = x2[sub == 0]
+            x_v = x_sh3[sub == 0]
             v_ca, v_sa = self.v_cbam(x_v)
-            x2[sub == 0] = x_v * v_ca * v_sa
+            x_sh3[sub == 0] = x_v * v_ca * v_sa
 
         elif has_infrared:
-            # 情况3:只有红外 -> 只用自己的CBAM
-            x_i = x2[sub == 1]
+            x_i = x_sh3[sub == 1]
             i_ca, i_sa = self.i_cbam(x_i)
-            x2[sub == 1] = x_i * i_ca * i_sa
+            x_sh3[sub == 1] = x_i * i_ca * i_sa
 
-        # ===== Mamba交叉注入 - Layer3 =====
-        if self.mamba_cross and self.training:
-            if has_visible and has_infrared:  # Mamba需要双模态
-                x_3_V_mamba, x_3_I_mamba = self.mamba_block_layer3(x2[sub == 0], x2[sub == 1])
-                x_mamba = torch.zeros_like(x2)
-                x_mamba[sub == 0] = x_3_V_mamba
-                x_mamba[sub == 1] = x_3_I_mamba
-                x2 = x_mamba
-
-        # 共享分支
-        x_sh3, x_sh4 = self.shared_module_bh(x2)
-
-        # # ===== Mamba交叉注入 - Layer4 =====
+        x_sh4 = self.shared_module_bh.model_sh_bh.layer4(x_sh3)
+        # # ===== Mamba交叉注入 - Layer3 =====
         # if self.mamba_cross and self.training:
         #     if has_visible and has_infrared:  # Mamba需要双模态
-        #         x_sh4_V = x_sh4[sub == 0]
-        #         x_sh4_I = x_sh4[sub == 1]
-        #
-        #         x_sh4_V_mamba, x_sh4_I_mamba = self.mamba_block_layer4(x_sh4_V, x_sh4_I)
-        #
-        #         x_sh4_new = torch.zeros_like(x_sh4)
-        #         x_sh4_new[sub == 0] = x_sh4_V_mamba
-        #         x_sh4_new[sub == 1] = x_sh4_I_mamba
-        #         x_sh4 = x_sh4_new
-
+        #         x_3_V_mamba, x_3_I_mamba = self.mamba_block_layer3(x2[sub == 0], x2[sub == 1])
+        #         x_mamba = torch.zeros_like(x2)
+        #         x_mamba[sub == 0] = x_3_V_mamba
+        #         x_mamba[sub == 1] = x_3_I_mamba
+        #         x2 = x_mamba
         # 池化得到最终共享特征
         sh_pl = gem(x_sh4).squeeze()
         sh_pl = sh_pl.view(sh_pl.size(0), -1)
