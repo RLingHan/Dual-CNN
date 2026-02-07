@@ -265,7 +265,7 @@ class Baseline(nn.Module):
         self.margin = kwargs.get('margin', 0.3)
 
         self.modality_align_loss = ModalityAlignmentLoss()
-        self.align = True
+        self.align = False
 
         # 消融实验
         self.CSA1 = kwargs.get('bg_kl', False)
