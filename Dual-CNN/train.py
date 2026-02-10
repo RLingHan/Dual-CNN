@@ -1,7 +1,7 @@
 import logging
 import os
 import pprint
-
+import torch.nn as nn
 import torch
 import yaml
 from torch import optim
@@ -107,7 +107,11 @@ def train(cfg):
 
     print(get_parameter_number(model))
 
-    model.to(device)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    gpu_ids = [0, 1]  # 双卡ID
+    model = model.to(device)  # 先将模型放到GPU
+    if torch.cuda.device_count() > 1:
+        model = nn.DataParallel(model, device_ids=gpu_ids)
 
     # optimizer
     assert cfg.optimizer in ['adam', 'sgd']
