@@ -398,8 +398,8 @@ class embed_net(nn.Module):
             x_v = x_v * v_ca * v_sa
             x_i = x_i * i_ca * i_sa
             # 跨模态互补增强
-            out_v = (1-alpha) * x_v + alpha * x_v * i_ca * i_sa
-            out_i = (1-alpha) * x_i + alpha * x_i * v_ca * v_sa
+            out_v = x_v + alpha * x_v * i_ca * i_sa
+            out_i = x_i + alpha * x_i * v_ca * v_sa
             # 重组
             x2_new = torch.zeros_like(x2)
             x2_new[sub == 0] = out_v
