@@ -45,5 +45,6 @@ class cbam(nn.Module):
 
     def forward(self, x):
         ca = self.ca(x)
+        x = x * ca
         sa = self.sa(x)
         return ca, sa
