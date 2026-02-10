@@ -13,7 +13,7 @@ dataset: sysu
 bg_kl: true
 sm_kl: true
 decompose: false
-distalign: true
+distalign: false
 IP: true
 classification: true
 center_cluster: false
