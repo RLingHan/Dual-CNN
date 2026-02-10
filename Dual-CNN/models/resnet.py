@@ -5,7 +5,6 @@ from torch.nn import functional as F
 from torch.hub import load_state_dict_from_url
 import torch
 import math
-from models.extension import MambaCrossBlock_V2
 from layers.module.CBAM import cbam
 
 __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
@@ -362,7 +361,7 @@ def gem(x, p=3, eps=1e-6):
 
 
 class embed_net(nn.Module):
-    def __init__(self, drop_last_stride,  decompose=False, mamba_cross=False):
+    def __init__(self, drop_last_stride,  decompose=False):
         super(embed_net, self).__init__()
 
         self.shared_module_fr = Shared_module_fr(drop_last_stride=drop_last_stride)
@@ -377,22 +376,9 @@ class embed_net(nn.Module):
         self.I_bh = Special_module_bh(drop_last_stride=drop_last_stride)
 
         self.decompose = decompose
-        self.mamba_cross = mamba_cross
-
         if self.decompose:
             self.mask1 = Mask(2048)
             self.mask2 = Mask(2048)
-        self.mamba_cross = False
-            # Mamba交叉注入模块
-        if self.mamba_cross:
-            # layer3后插入：1024通道 -> d_model=512, d_state=64, headdim=64
-            self.mamba_block_layer3 = MambaCrossBlock_V2(
-                in_channels=1024,
-                d_model=128,  # 可以根据显存调整
-                d_state=32,  # Mamba-2 推荐值
-                headdim=32,  # 每个头的维度
-                chunk_size=8  # 分块大小
-            )
     def forward(self, x, sub):
         batch_size = x.size(0)
         x2 = self.shared_module_fr(x)  # (B, 512, H, W)
@@ -435,19 +421,6 @@ class embed_net(nn.Module):
 
         # 共享分支
         x_sh3, x_sh4 = self.shared_module_bh(x2)
-
-        # ===== Mamba交叉注入 - Layer3 =====
-        if self.mamba_cross and self.training:
-            if has_visible and has_infrared:  # Mamba需要双模态
-                x_sh3_V = x_sh3[sub == 0]
-                x_sh3_I = x_sh3[sub == 1]
-
-                x_sh3_V_mamba, x_sh3_I_mamba = self.mamba_block_layer3(x_sh3_V, x_sh3_I)
-
-                x_sh3_new = torch.zeros_like(x_sh3)
-                x_sh3_new[sub == 0] = x_sh3_V_mamba
-                x_sh3_new[sub == 1] = x_sh3_I_mamba
-                x_sh3 = x_sh3_new
 
         # 池化得到最终共享特征
         sh_pl = gem(x_sh4).squeeze()

@@ -23,7 +23,7 @@ fb_dt: false #true
 center: false
 
 # parameters
-margin: 1.3
+margin: 1.2
 
 num_parts: 6
 weight_sep: 0.5
