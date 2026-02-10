@@ -4,7 +4,7 @@ fp16: true
 # dataset
 sample_method: identity_random #identity_uniform #identity_random
 image_size: (384, 144) #(384, 144)
-p_size: 12
+p_size: 16
 k_size: 10
 
 dataset: sysu
@@ -53,6 +53,6 @@ color_jitter: false
 padding: 10
 
 # log
-log_period: 150
+log_period: 100
 start_eval: 5 #200
 eval_interval: 5
