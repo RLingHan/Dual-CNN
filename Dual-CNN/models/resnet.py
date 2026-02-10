@@ -386,7 +386,7 @@ class embed_net(nn.Module):
         # 检查模态存在性
         has_visible = (sub == 0).any()
         has_infrared = (sub == 1).any()
-
+        alpha = torch.sigmoid(self.alpha)
         # ===== 跨模态CBAM融合 =====
         if has_visible and has_infrared:
             # 情况1:双模态都存在 -> 跨模态融合
@@ -398,7 +398,6 @@ class embed_net(nn.Module):
             x_v = x_v * v_ca * v_sa
             x_i = x_i * i_ca * i_sa
             # 跨模态互补增强
-            alpha = torch.sigmoid(self.alpha)
             out_v = (1-alpha) * x_v + alpha * x_v * i_ca * i_sa
             out_i = (1-alpha) * x_i + alpha * x_i * v_ca * v_sa
             # 重组
