@@ -399,8 +399,8 @@ class embed_net(nn.Module):
             x_i = x_i * i_ca * i_sa
             # 跨模态互补增强
             alpha = torch.sigmoid(self.alpha)
-            out_v = x_v + alpha * x_v * i_ca * i_sa
-            out_i = x_i + alpha * x_i * v_ca * v_sa
+            out_v = (1-alpha) * x_v + alpha * x_v * i_ca * i_sa
+            out_i = (1-alpha) * x_i + alpha * x_i * v_ca * v_sa
             # 重组
             x2_new = torch.zeros_like(x2)
             x2_new[sub == 0] = out_v
@@ -448,9 +448,9 @@ class embed_net(nn.Module):
                     sp_pl[sub == 1] = i_pl
 
         if self.decompose:
-            return sh_pl, sp_pl
+            return sh_pl, alpha, sp_pl
         else:
-            return sh_pl, None
+            return sh_pl, alpha, None
 
 
 def _resnet(arch, block, layers, pretrained, progress, **kwargs):
