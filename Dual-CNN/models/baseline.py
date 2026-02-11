@@ -294,8 +294,8 @@ class Baseline(nn.Module):
 
         self.D_spec = convDiscrimination(dim=512)
         self.D_shared_pseu = Discrimination()  # 伪模态分类器（共享特征分支）
-        self.lambda_ortho = kwargs.get('lambda_ortho', 0.01)
-        self.lambda_sparse = kwargs.get('lambda_sparse', 0.001)
+        self.lambda_ortho = kwargs.get('lambda_ortho', 1.0)
+        self.lambda_sparse = kwargs.get('lambda_sparse', 0.5)
 
         if self.decompose:
             self.classifier = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False) # 主分类器（共享特征）
