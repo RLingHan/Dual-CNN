@@ -207,7 +207,7 @@ def modal_centroid_loss(F1, F2, labels, modalities, margin):
     # 返回损失的平均值
     return losses.mean()
 
-def compute_mask_regularization(self, masks):
+def compute_mask_regularization(masks):
     """计算掩码正则化损失"""
     M_v = masks['M_v']  # [B_v, C, 1, 1]
     M_i = masks['M_i']  # [B_i, C, 1, 1]
