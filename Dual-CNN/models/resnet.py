@@ -409,11 +409,13 @@ class embed_net(nn.Module):
             M_v = self.mask_generator.mask_v(x2[sub == 0])
             M_i = self.mask_generator.mask_i(x2[sub == 1])
             M_s = self.mask_generator.mask_s(x2)
+            M_s_v = M_s[sub == 0]  # [B_v, C, 1, 1]
+            M_s_i = M_s[sub == 1]  # [B_i, C, 1, 1]
             F_v_spec = x2[sub ==0] * M_v
-            F_v_share = x2[sub ==0] * M_s
+            F_v_share = x2[sub == 0] * M_s_v
             F_v_comp = x2[sub ==0] * M_i  # 用红外掩码
             F_i_spec = x2[sub ==1] * M_i
-            F_i_share = x2[sub ==1] * M_s
+            F_i_share = x2[sub == 1] * M_s_i
             F_i_comp = x2[sub ==1] * M_v  # 用可见光掩码
             F_v_final = F_v_share + alpha * F_v_comp
             F_i_final = F_i_share + alpha * F_i_comp
@@ -432,8 +434,8 @@ class embed_net(nn.Module):
             # x_v = x2[sub == 0]
             # v_ca, v_sa = self.v_cbam(x_v)
             # x2[sub == 0] = x_v * v_ca * v_sa
-            M_s = self.mask_generator.mask_s(x2[sub == 0])
-            x2[sub ==0] = M_s * x2[sub == 0]
+            M_s_v = self.mask_generator.mask_s(x2[sub == 0])
+            x2[sub ==0] = M_s_v * x2[sub == 0]
             self.masks = None
 
         elif has_infrared:
@@ -441,8 +443,8 @@ class embed_net(nn.Module):
             # x_i = x2[sub == 1]
             # i_ca, i_sa = self.i_cbam(x_i)
             # x2[sub == 1] = x_i * i_ca * i_sa
-            M_s = self.mask_generator.mask_s(x2[sub == 1])
-            x2[sub ==1] = M_s * x2[sub == 1]
+            M_s_i = self.mask_generator.mask_s(x2[sub == 1])
+            x2[sub ==1] = M_s_i * x2[sub == 1]
             self.masks = None
 
         # 共享分支
