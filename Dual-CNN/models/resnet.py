@@ -6,6 +6,7 @@ from torch.hub import load_state_dict_from_url
 import torch
 import math
 from layers.module.CBAM import cbam
+from models.channel import ChannelMaskGenerator
 
 __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
            'resnet152', 'resnext50_32x4d', 'resnext101_32x8d']
@@ -374,7 +375,7 @@ class embed_net(nn.Module):
 
         self.V_bh = Special_module_bh(drop_last_stride=drop_last_stride)
         self.I_bh = Special_module_bh(drop_last_stride=drop_last_stride)
-
+        self.mask_generator = ChannelMaskGenerator(dim=512, r=16)
         self.decompose = decompose
         if self.decompose:
             self.mask1 = Mask(2048)
@@ -389,34 +390,60 @@ class embed_net(nn.Module):
         alpha = torch.sigmoid(self.alpha)
         # ===== 跨模态CBAM融合 =====
         if has_visible and has_infrared:
-            # 情况1:双模态都存在 -> 跨模态融合
-            x_v = x2[sub == 0]
-            x_i = x2[sub == 1]
-            v_ca, v_sa = self.v_cbam(x_v)
-            i_ca, i_sa = self.i_cbam(x_i)
-            # 应用自身注意力
-            x_v = x_v * v_ca * v_sa
-            x_i = x_i * i_ca * i_sa
-            # 跨模态互补增强
-            out_v = x_v + alpha * x_v * i_ca * i_sa
-            out_i = x_i + alpha * x_i * v_ca * v_sa
-            # 重组
-            x2_new = torch.zeros_like(x2)
-            x2_new[sub == 0] = out_v
-            x2_new[sub == 1] = out_i
-            x2 = x2_new
-
+            # # 情况1:双模态都存在 -> 跨模态融合
+            # x_v = x2[sub == 0]
+            # x_i = x2[sub == 1]
+            # v_ca, v_sa = self.v_cbam(x_v)
+            # i_ca, i_sa = self.i_cbam(x_i)
+            # # 应用自身注意力
+            # x_v = x_v * v_ca * v_sa
+            # x_i = x_i * i_ca * i_sa
+            # # 跨模态互补增强
+            # out_v = x_v + alpha * x_v * i_ca * i_sa
+            # out_i = x_i + alpha * x_i * v_ca * v_sa
+            # # 重组
+            # x2_new = torch.zeros_like(x2)
+            # x2_new[sub == 0] = out_v
+            # x2_new[sub == 1] = out_i
+            # x2 = x2_new
+            M_v = self.mask_generator.mask_v(x2[sub == 0])
+            M_i = self.mask_generator.mask_i(x2[sub == 1])
+            M_s = self.mask_generator.mask_s(x2)
+            F_v_spec = x2[sub ==0] * M_v
+            F_v_share = x2[sub ==0] * M_s
+            F_v_comp = x2[sub ==0] * M_i  # 用红外掩码
+            F_i_spec = x2[sub ==1] * M_i
+            F_i_share = x2[sub ==1] * M_s
+            F_i_comp = x2[sub ==1] * M_v  # 用可见光掩码
+            F_v_final = F_v_share + alpha * F_v_comp
+            F_i_final = F_i_share + alpha * F_i_comp
+            x2_masked = torch.zeros_like(x2)
+            x2_masked[sub == 0] = F_v_final
+            x2_masked[sub == 1] = F_i_final
+            x2 = x2_masked
+            self.masks = {
+                'M_v': M_v,
+                'M_i': M_i,
+                'F_v_spec': F_v_spec,
+                'F_i_spec': F_i_spec
+            }
         elif has_visible:
-            # 情况2:只有可见光 -> 只用自己的CBAM
-            x_v = x2[sub == 0]
-            v_ca, v_sa = self.v_cbam(x_v)
-            x2[sub == 0] = x_v * v_ca * v_sa
+            # # 情况2:只有可见光 -> 只用自己的CBAM
+            # x_v = x2[sub == 0]
+            # v_ca, v_sa = self.v_cbam(x_v)
+            # x2[sub == 0] = x_v * v_ca * v_sa
+            M_s = self.mask_generator.mask_s(x2[sub == 0])
+            x2[sub ==0] = M_s * x2[sub == 0]
+            self.masks = None
 
         elif has_infrared:
-            # 情况3:只有红外 -> 只用自己的CBAM
-            x_i = x2[sub == 1]
-            i_ca, i_sa = self.i_cbam(x_i)
-            x2[sub == 1] = x_i * i_ca * i_sa
+            # # 情况3:只有红外 -> 只用自己的CBAM
+            # x_i = x2[sub == 1]
+            # i_ca, i_sa = self.i_cbam(x_i)
+            # x2[sub == 1] = x_i * i_ca * i_sa
+            M_s = self.mask_generator.mask_s(x2[sub == 1])
+            x2[sub ==1] = M_s * x2[sub == 1]
+            self.masks = None
 
         # 共享分支
         x_sh3, x_sh4 = self.shared_module_bh(x2)
