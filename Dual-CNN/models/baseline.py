@@ -19,36 +19,6 @@ from layers.loss.center_loss import CenterLoss
 # from layers import NonLocalBlockND
 from utils.rerank import re_ranking, pairwise_distance
 
-def cross_modality_hallucination(feat_sh, feat_sp, labels, sub, lam=0.3):
-    """
-    feat_sh: [B, C, H, W] 共享特征
-    feat_sp: [B, C, H, W] 特有特征
-    labels: [B] 身份标签 (ID)
-    modal_labels: [B] 模态标签 (0:IR, 1:RGB)
-    lam: 注入强度超参数
-    """
-    batch_size = feat_sh.size(0)
-    feat_hallu = feat_sh.clone()
-
-    # 记录哪些位置成功进行了幻觉注入
-    hallu_mask = torch.zeros(batch_size).to(feat_sh.device)
-
-    for i in range(batch_size):
-        # 寻找干扰源的索引：
-        # 1. 模态必须不同: modal_labels != modal_labels[i]
-        # 2. ID 必须不同: labels != labels[i] (攻击性更强，防止过拟合)
-        target_idx = (sub != sub[i]) & (labels != labels[i])
-        target_indices = torch.where(target_idx)[0]
-
-        if len(target_indices) > 0:
-            # 随机选一个符合条件的异模态 Specific 特征作为噪声
-            sel_idx = target_indices[torch.randint(0, len(target_indices), (1,))]
-            # 注入攻击：自身共享特征 + 别人的特有特征
-            feat_hallu[i] = feat_sh[i] + lam * feat_sp[sel_idx]
-            hallu_mask[i] = 1
-
-    return feat_hallu, hallu_mask
-
 def intersect1d(tensor1, tensor2):
     #找出 tensor1 和 tensor2 中的共有元素
     return torch.unique(torch.cat([tensor1[tensor1 == val] for val in tensor2]))
