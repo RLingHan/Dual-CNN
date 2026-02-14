@@ -498,9 +498,9 @@ class embed_net(nn.Module):
                     sp_pl[sub == 1] = i_pl
 
         if self.decompose:
-            return sh_pl, alpha, f_sh, f_sp, sp_pl
+            return sh_pl, alpha, f_sh, f_sp, p_mod ,sp_pl
         else:
-            return sh_pl, alpha, f_sh, f_sp, None
+            return sh_pl, alpha, f_sh, f_sp, p_mod ,None
 
 
 def _resnet(arch, block, layers, pretrained, progress, **kwargs):
