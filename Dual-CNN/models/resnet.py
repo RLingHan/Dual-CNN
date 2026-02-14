@@ -21,33 +21,43 @@ model_urls = {
     'resnext101_32x8d': 'https://download.pytorch.org/models/resnext101_32x8d-8ba56ff5.pth',
 }
 
+
 def cross_modality_hallucination(feat_sh, feat_sp, labels, sub, lam=0.3):
     """
     feat_sh: [B, C, H, W] 共享特征
     feat_sp: [B, C, H, W] 特有特征
     labels: [B] 身份标签 (ID)
-    modal_labels: [B] 模态标签 (0:IR, 1:RGB)
+    sub: [B] 模态标签 (0:IR, 1:RGB)
     lam: 注入强度超参数
     """
     batch_size = feat_sh.size(0)
-    feat_hallu = feat_sh.clone()
-
-    # 记录哪些位置成功进行了幻觉注入
-    hallu_mask = torch.zeros(batch_size).to(feat_sh.device)
-
-    for i in range(batch_size):
-        # 寻找干扰源的索引：
-        # 1. 模态必须不同: modal_labels != modal_labels[i]
-        # 2. ID 必须不同: labels != labels[i] (攻击性更强，防止过拟合)
-        target_idx = (sub != sub[i]) & (labels != labels[i])
-        target_indices = torch.where(target_idx)[0]
-
-        if len(target_indices) > 0:
-            # 随机选一个符合条件的异模态 Specific 特征作为噪声
-            sel_idx = target_indices[torch.randint(0, len(target_indices), (1,))]
-            # 注入攻击：自身共享特征 + 别人的特有特征
-            feat_hallu[i] = feat_sh[i] + lam * feat_sp[sel_idx]
-            hallu_mask[i] = 1
+    device = feat_sh.device
+    # ===== 完全向量化实现 =====
+    # 1. 构造掩码矩阵 [B, B]: mask[i,j]=True 表示j可以作为i的干扰源
+    # 条件: sub[i] != sub[j] AND labels[i] != labels[j]
+    # sub不同的mask [B, B]
+    sub_diff = sub.unsqueeze(1) != sub.unsqueeze(0)  # [B, 1] != [1, B] → [B, B]
+    # labels不同的mask [B, B]
+    label_diff = labels.unsqueeze(1) != labels.unsqueeze(0)
+    # 合并条件
+    valid_mask = sub_diff & label_diff  # [B, B]
+    # 2. 为每行随机选择一个有效索引
+    # 给无效位置赋极小概率,有效位置赋相等概率
+    rand_weights = torch.rand(batch_size, batch_size, device=device)
+    rand_weights = rand_weights * valid_mask.float()  # 无效位置权重=0
+    # 如果某行全是0(没有有效候选),随机选一个(虽然不满足条件,但避免崩溃)
+    row_sum = rand_weights.sum(dim=1, keepdim=True)
+    rand_weights = rand_weights / (row_sum + 1e-8)  # 归一化为概率
+    # 3. 采样: 用multinomial或argmax
+    # 方法A: argmax(更快,但随机性略差)
+    selected_indices = rand_weights.argmax(dim=1)  # [B]
+    # 4. 根据selected_indices索引feat_sp
+    # feat_sp[selected_indices]: [B, C, H, W]
+    selected_sp = feat_sp[selected_indices]  # 自动广播
+    # 5. 注入
+    feat_hallu = feat_sh + lam * selected_sp
+    # 6. 记录哪些位置有效注入(可选,用于调试)
+    hallu_mask = valid_mask.any(dim=1).float()  # [B]
 
     return feat_hallu, hallu_mask
 
