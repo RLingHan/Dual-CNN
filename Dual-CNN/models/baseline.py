@@ -19,6 +19,35 @@ from layers.loss.center_loss import CenterLoss
 # from layers import NonLocalBlockND
 from utils.rerank import re_ranking, pairwise_distance
 
+def cross_modality_hallucination(feat_sh, feat_sp, labels, sub, lam=0.3):
+    """
+    feat_sh: [B, C, H, W] 共享特征
+    feat_sp: [B, C, H, W] 特有特征
+    labels: [B] 身份标签 (ID)
+    modal_labels: [B] 模态标签 (0:IR, 1:RGB)
+    lam: 注入强度超参数
+    """
+    batch_size = feat_sh.size(0)
+    feat_hallu = feat_sh.clone()
+
+    # 记录哪些位置成功进行了幻觉注入
+    hallu_mask = torch.zeros(batch_size).to(feat_sh.device)
+
+    for i in range(batch_size):
+        # 寻找干扰源的索引：
+        # 1. 模态必须不同: modal_labels != modal_labels[i]
+        # 2. ID 必须不同: labels != labels[i] (攻击性更强，防止过拟合)
+        target_idx = (sub != sub[i]) & (labels != labels[i])
+        target_indices = torch.where(target_idx)[0]
+
+        if len(target_indices) > 0:
+            # 随机选一个符合条件的异模态 Specific 特征作为噪声
+            sel_idx = target_indices[torch.randint(0, len(target_indices), (1,))]
+            # 注入攻击：自身共享特征 + 别人的特有特征
+            feat_hallu[i] = feat_sh[i] + lam * feat_sp[sel_idx]
+            hallu_mask[i] = 1
+
+    return feat_hallu, hallu_mask
 
 def intersect1d(tensor1, tensor2):
     #找出 tensor1 和 tensor2 中的共有元素
@@ -207,21 +236,6 @@ def modal_centroid_loss(F1, F2, labels, modalities, margin):
     # 返回损失的平均值
     return losses.mean()
 
-def compute_mask_regularization(masks):
-    """计算掩码正则化损失"""
-    M_v = masks['M_v']  # [B_v, C, 1, 1]
-    M_i = masks['M_i']  # [B_i, C, 1, 1]
-
-    # 正交约束：min(M_v ⊙ M_i) - 让v和i通道尽量不重叠
-    # 由于batch中v和i数量相同，直接计算
-    M_v_sq = M_v.squeeze()  # [B_v, C]
-    M_i_sq = M_i.squeeze()  # [B_i, C]
-    ortho_loss = (M_v_sq * M_i_sq).mean()
-
-    # 稀疏约束：L1(M_v) + L1(M_i) - 避免掩码全为1
-    sparse_loss = M_v.abs().mean() + M_i.abs().mean()
-
-    return ortho_loss, sparse_loss
 
 class ModalityAlignmentLoss(nn.Module):
     def __init__(self, temperature=0.07):
@@ -292,10 +306,8 @@ class Baseline(nn.Module):
         self.fb_dt = kwargs.get('fb_dt', False)
         self.mutual_learning = kwargs.get('mutual_learning', False)
 
-        self.D_spec = convDiscrimination(dim=512)
         self.D_shared_pseu = Discrimination()  # 伪模态分类器（共享特征分支）
-        self.lambda_ortho = kwargs.get('lambda_ortho', 1.0)
-        self.lambda_sparse = kwargs.get('lambda_sparse', 0.5)
+        self.special_D = convDiscrimination(1024)
 
         if self.decompose:
             self.classifier = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False) # 主分类器（共享特征）
@@ -323,7 +335,7 @@ class Baseline(nn.Module):
         #epoch = kwargs.get('epoch')
         # CNN
         #layer4输出  layer4的语义特征  相互调节后的语义特征 mask前/后模态无关特征 mask前/后特别特征
-        sh_pl, alpha, sp_pl = self.backbone(inputs,sub=sub)
+        sh_pl, alpha, f_sh, f_sp, sp_pl = self.backbone(inputs,sub=sub,labels=labels)
         #提取特征
 
         feats = sh_pl #layer4的语义输出
@@ -341,16 +353,22 @@ class Baseline(nn.Module):
                 return feats
 
         else:
-            return self.train_forward(feats, alpha, sp_pl, labels,sub, **kwargs)
+            return self.train_forward(feats, alpha, f_sh, f_sp,sp_pl, labels,sub, **kwargs)
 
 
 
-    def train_forward(self, feat, alpha, sp_pl ,labels,sub, **kwargs):
+    def train_forward(self, feat, alpha, f_sh, f_sp, sp_pl ,labels,sub, **kwargs):
         epoch = kwargs.get('epoch')
         metric = {}
         loss = 0
 
         metric.update({'alpha': alpha.data})
+
+
+        sp_logits = self.special_D(f_sp) #F_sh
+        sp_loss = self.id_loss(sp_logits.float(), sub) #鼓励判别器识别不出sh
+        loss += sp_loss
+        metric.update({'sp_loss': sp_loss.data})
 
         if self.triplet:
 
@@ -427,31 +445,6 @@ class Baseline(nn.Module):
             loss += fb_loss
 
             metric.update({'f_dt': fb_loss.data})
-
-        if hasattr(self.backbone, 'masks') and self.backbone.masks is not None:
-            masks = self.backbone.masks
-            # 1. 掩码正则化
-            ortho_loss, sparse_loss = compute_mask_regularization(masks)
-            mask_reg_loss = self.lambda_ortho * ortho_loss + self.lambda_sparse * sparse_loss
-            loss += mask_reg_loss
-            metric.update({'mask_orthot': ortho_loss.data})
-            metric.update({'mask_sparse': sparse_loss.data})
-
-            # 2. 正向判别器：判别 F_v_spec 和 F_i_spec（用特征图）
-            F_v_spec = masks['F_v_spec']  # [B_v, 512, H, W]
-            F_i_spec = masks['F_i_spec']  # [B_i, 512, H, W]
-
-            # 拼接并打标签
-            F_spec_cat = torch.cat([F_v_spec, F_i_spec], dim=0)
-            spec_labels = torch.cat([
-                torch.zeros(F_v_spec.size(0), dtype=torch.long, device=F_v_spec.device),
-                torch.ones(F_i_spec.size(0), dtype=torch.long, device=F_i_spec.device)
-            ])
-
-            spec_logits = self.D_spec(F_spec_cat)
-            discr_spec_loss = self.id_loss(spec_logits, spec_labels)
-            loss += discr_spec_loss
-            metric.update({'discr_spec': discr_spec_loss.data})
 
         feat = self.bn_neck(feat)
         if self.decompose:

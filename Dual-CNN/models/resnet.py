@@ -6,7 +6,8 @@ from torch.hub import load_state_dict_from_url
 import torch
 import math
 from layers.module.CBAM import cbam
-from models.channel import ChannelMaskGenerator
+from models.baseline import cross_modality_hallucination
+from models.channel import AdaptiveGlobalModule, MUMModule
 
 __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
            'resnet152', 'resnext50_32x4d', 'resnext101_32x8d']
@@ -20,6 +21,7 @@ model_urls = {
     'resnext50_32x4d': 'https://download.pytorch.org/models/resnext50_32x4d-7cdf4587.pth',
     'resnext101_32x8d': 'https://download.pytorch.org/models/resnext101_32x8d-8ba56ff5.pth',
 }
+
 
 
 class convDiscrimination(nn.Module):
@@ -372,15 +374,17 @@ class embed_net(nn.Module):
         self.i_cbam = cbam(512)
         self.alpha = nn.Parameter(torch.tensor(-2.0), requires_grad=True)
 
+        # self.adp_global = AdaptiveGlobalModule(1024)
 
         self.V_bh = Special_module_bh(drop_last_stride=drop_last_stride)
         self.I_bh = Special_module_bh(drop_last_stride=drop_last_stride)
-        self.mask_generator = ChannelMaskGenerator(dim=512, r=16)
+        self.mum = MUMModule(in_channels=1024)
+
         self.decompose = decompose
         if self.decompose:
             self.mask1 = Mask(2048)
             self.mask2 = Mask(2048)
-    def forward(self, x, sub):
+    def forward(self, x, sub ,labels):
         batch_size = x.size(0)
         x2 = self.shared_module_fr(x)  # (B, 512, H, W)
 
@@ -390,66 +394,47 @@ class embed_net(nn.Module):
         alpha = torch.sigmoid(self.alpha)
         # ===== 跨模态CBAM融合 =====
         if has_visible and has_infrared:
-            # # 情况1:双模态都存在 -> 跨模态融合
-            # x_v = x2[sub == 0]
-            # x_i = x2[sub == 1]
-            # v_ca, v_sa = self.v_cbam(x_v)
-            # i_ca, i_sa = self.i_cbam(x_i)
-            # # 应用自身注意力
-            # x_v = x_v * v_ca * v_sa
-            # x_i = x_i * i_ca * i_sa
-            # # 跨模态互补增强
-            # out_v = x_v + alpha * x_v * i_ca * i_sa
-            # out_i = x_i + alpha * x_i * v_ca * v_sa
-            # # 重组
-            # x2_new = torch.zeros_like(x2)
-            # x2_new[sub == 0] = out_v
-            # x2_new[sub == 1] = out_i
-            # x2 = x2_new
-            M_v = self.mask_generator.mask_v(x2[sub == 0])
-            M_i = self.mask_generator.mask_i(x2[sub == 1])
-            M_s = self.mask_generator.mask_s(x2)
-            M_s_v = M_s[sub == 0]  # [B_v, C, 1, 1]
-            M_s_i = M_s[sub == 1]  # [B_i, C, 1, 1]
-            F_v_spec = x2[sub ==0] * M_v
-            F_v_share = x2[sub == 0] * M_s_v
-            F_v_comp = x2[sub ==0] * M_i  # 用红外掩码
-            F_i_spec = x2[sub ==1] * M_i
-            F_i_share = x2[sub == 1] * M_s_i
-            F_i_comp = x2[sub ==1] * M_v  # 用可见光掩码
-            F_v_final = F_v_share + alpha * F_v_comp
-            F_i_final = F_i_share + alpha * F_i_comp
-            x2_masked = torch.zeros_like(x2)
-            x2_masked[sub == 0] = F_v_final
-            x2_masked[sub == 1] = F_i_final
-            x2 = x2_masked
-            self.masks = {
-                'M_v': M_v,
-                'M_i': M_i,
-                'F_v_spec': F_v_spec,
-                'F_i_spec': F_i_spec
-            }
+            # 情况1:双模态都存在 -> 跨模态融合
+            x_v = x2[sub == 0]
+            x_i = x2[sub == 1]
+            v_ca, v_sa = self.v_cbam(x_v)
+            i_ca, i_sa = self.i_cbam(x_i)
+            # 应用自身注意力
+            x_v = x_v * v_ca * v_sa
+            x_i = x_i * i_ca * i_sa
+            # 跨模态互补增强
+            out_v = x_v + alpha * x_v * i_ca * i_sa
+            out_i = x_i + alpha * x_i * v_ca * v_sa
+            # 重组
+            x2_new = torch.zeros_like(x2)
+            x2_new[sub == 0] = out_v
+            x2_new[sub == 1] = out_i
+            x2 = x2_new
+
         elif has_visible:
-            # # 情况2:只有可见光 -> 只用自己的CBAM
-            # x_v = x2[sub == 0]
-            # v_ca, v_sa = self.v_cbam(x_v)
-            # x2[sub == 0] = x_v * v_ca * v_sa
-            M_s_v = self.mask_generator.mask_s(x2[sub == 0])
-            x2[sub ==0] = M_s_v * x2[sub == 0]
-            self.masks = None
+            # 情况2:只有可见光 -> 只用自己的CBAM
+            x_v = x2[sub == 0]
+            v_ca, v_sa = self.v_cbam(x_v)
+            x2[sub == 0] = x_v * v_ca * v_sa
 
         elif has_infrared:
-            # # 情况3:只有红外 -> 只用自己的CBAM
-            # x_i = x2[sub == 1]
-            # i_ca, i_sa = self.i_cbam(x_i)
-            # x2[sub == 1] = x_i * i_ca * i_sa
-            M_s_i = self.mask_generator.mask_s(x2[sub == 1])
-            x2[sub ==1] = M_s_i * x2[sub == 1]
-            self.masks = None
+            # 情况3:只有红外 -> 只用自己的CBAM
+            x_i = x2[sub == 1]
+            i_ca, i_sa = self.i_cbam(x_i)
+            x2[sub == 1] = x_i * i_ca * i_sa
 
         # 共享分支
-        x_sh3, x_sh4 = self.shared_module_bh(x2)
-
+        # x_sh3, x_sh4 = self.shared_module_bh(x2)
+        x_sh3 = self.shared_module_bh.model_sh_bh.layer3(x2)
+        m_sh, m_sp, p_mod = self.mum(x_sh3)
+        f_sh = x_sh3 * m_sh
+        f_sp = x_sh3 * m_sp
+        f_hallu, _ = cross_modality_hallucination(f_sh, f_sp, labels, sub)
+        # x_sh3 = self.adp_global(x_sh3)  # 全局上下文
+        if self.training:
+            x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_hallu)
+        else:
+            x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_sh)
         # 池化得到最终共享特征
         sh_pl = gem(x_sh4).squeeze()
         sh_pl = sh_pl.view(sh_pl.size(0), -1)
@@ -476,9 +461,9 @@ class embed_net(nn.Module):
                     sp_pl[sub == 1] = i_pl
 
         if self.decompose:
-            return sh_pl, alpha, sp_pl
+            return sh_pl, alpha, f_sh, f_sp, sp_pl
         else:
-            return sh_pl, alpha, None
+            return sh_pl, alpha, f_sh, f_sp, None
 
 
 def _resnet(arch, block, layers, pretrained, progress, **kwargs):
