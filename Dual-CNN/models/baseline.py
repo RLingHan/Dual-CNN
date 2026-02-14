@@ -264,7 +264,7 @@ class Baseline(nn.Module):
         self.margin = kwargs.get('margin', 0.3)
 
         self.modality_align_loss = ModalityAlignmentLoss()
-        self.align = False
+        self.align = True
 
         # 消融实验
         self.CSA1 = kwargs.get('bg_kl', False)
@@ -363,7 +363,7 @@ class Baseline(nn.Module):
             i_labels = labels[sub == 1]
 
             align_loss = self.modality_align_loss(feat[sub == 0], feat[sub == 1], v_labels,i_labels)
-            align_loss = align_loss * 0.2
+            align_loss = align_loss * 0.5
             loss += align_loss
             metric.update({'align_loss': align_loss.data})
 
