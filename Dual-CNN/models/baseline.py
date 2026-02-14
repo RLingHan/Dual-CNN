@@ -213,24 +213,25 @@ class ModalityAlignmentLoss(nn.Module):
         self.temp = temperature
 
     def forward(self, v_feat, i_feat, v_labels, i_labels):
-        # 此时 v_feat 和 v_labels 都是 N=30
         v_feat = F.normalize(v_feat, dim=1)
         i_feat = F.normalize(i_feat, dim=1)
 
-        # sim 形状为 (30, 30)
+        N = v_feat.size(0)
+        device = v_feat.device
         sim = torch.mm(v_feat, i_feat.t()) / self.temp
-
-        # v_labels.unsqueeze(1) -> (30, 1)
-        # i_labels.unsqueeze(0) -> (1, 30)
         labels_eq = v_labels.unsqueeze(1) == i_labels.unsqueeze(0)
 
-        exp_sim = torch.exp(sim)
-        pos_sum = (exp_sim * labels_eq.float()).sum(1)
-        all_sum = exp_sim.sum(1)
+        loss_list = []
+        for i in range(N):
+            pos_indices = torch.where(labels_eq[i])[0]
+            if len(pos_indices) > 0:
+                selected = pos_indices[torch.randint(len(pos_indices), (1,)).item()]
+                pos_sim = sim[i, selected]
+                all_sim = sim[i]
+                loss_i = -torch.log(torch.exp(pos_sim) / torch.exp(all_sim).sum())
+                loss_list.append(loss_i)
 
-        # 增加 1e-8 防止 log(0)
-        loss = -torch.log(pos_sum / (all_sum + 1e-8)).mean()
-        return loss
+        return torch.stack(loss_list).mean() if loss_list else torch.tensor(0.0, device=device)
 
 
 class Baseline(nn.Module):
