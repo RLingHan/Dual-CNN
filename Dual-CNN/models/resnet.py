@@ -7,6 +7,7 @@ import torch
 import math
 from layers.module.CBAM import cbam
 from models.channel import AdaptiveGlobalModule, MUMModule
+from models.mada import ModalityAwareDualAttention
 
 __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
            'resnet152', 'resnext50_32x4d', 'resnext101_32x8d']
@@ -416,6 +417,10 @@ class embed_net(nn.Module):
         self.V_bh = Special_module_bh(drop_last_stride=drop_last_stride)
         self.I_bh = Special_module_bh(drop_last_stride=drop_last_stride)
         self.mum = MUMModule(in_channels=1024)
+        self.mada = ModalityAwareDualAttention(
+            in_channels=1024,  # layer3输出通道数
+            num_parts=3  # 分成3个part (头、躯干、腿)
+        )
 
         self.decompose = decompose
         if self.decompose:
@@ -463,6 +468,7 @@ class embed_net(nn.Module):
         # 共享分支
         # x_sh3, x_sh4 = self.shared_module_bh(x2)
         x_sh3 = self.shared_module_bh.model_sh_bh.layer3(x2)
+        x_sh3 = self.mada(x_sh3, sub)
         m_sh, m_sp, p_mod = self.mum(x_sh3)
         f_sh = x_sh3 * m_sh
         f_sp = x_sh3 * m_sp
