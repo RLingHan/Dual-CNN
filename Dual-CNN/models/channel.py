@@ -73,10 +73,10 @@ class ISCM(nn.Module):
         # --- 步骤 B: 风格剥离 (Style Stripping via IN) ---
         # 使用 IN 去除模态特定的均值和方差 (即去除了 RGB/IR 的光照/热辐射风格)
         # 剩下的 f_sp_stripped 理论上只包含结构/形状信息
-        f_sp_stripped = self.in_layer(f_sp_id)
+        f_sp_id = self.in_layer(f_sp_id)
         # --- 步骤 C: 补偿融合 (Compensation) ---
         # f_enhanced = Shared + alpha * Normalize(Specific)
-        f_sh_enhanced = f_sh + self.beta * f_sp_stripped
+        f_sh_enhanced = f_sh + self.beta * f_sp_id
         return f_sh_enhanced, f_sp_id
 
 class GlobalContextBlock(nn.Module):

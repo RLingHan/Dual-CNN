@@ -465,12 +465,12 @@ class embed_net(nn.Module):
         m_sh, m_sp, p_mod = self.mum(x_sh3)
         f_sh = x_sh3 * m_sh
         f_sp = x_sh3 * m_sp
-        f_sh, f_sp = self.icml(f_sh,f_sp)
+        f_sh, f_sp_id = self.icml(f_sh,f_sp)
         # x_sh3 = self.adp_global(x_sh3)  # 全局上下文
         if self.training:
             f_hallu, _ = cross_modality_hallucination(f_sh, f_sp, labels, sub)
             x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_hallu)
-            x_sp = self.shared_module_bh.model_sh_bh.layer4(f_sp)
+            x_sp = self.shared_module_bh.model_sh_bh.layer4(f_sp_id)
         else:
             x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_sh)
             x_sp = self.shared_module_bh.model_sh_bh.layer4(f_sp)

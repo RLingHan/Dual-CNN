@@ -287,7 +287,6 @@ class Baseline(nn.Module):
 
         else:
             self.classifier = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False)
-            self.classifier_sp = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False)
         if self.classification:
             self.id_loss = nn.CrossEntropyLoss(ignore_index=-1)
         if self.triplet:
@@ -448,7 +447,7 @@ class Baseline(nn.Module):
 
         if self.classification:
             logits = self.classifier(feat)
-            logits_sp = self.classifier_sp(sp_pl)
+            logits_sp = self.classifier(sp_pl)
             if self.CSA1:
                 _, intra_bg = Bg_kl(logits[sub == 0], logits[sub == 1])  # 共享和红外对齐
                 bg_loss = intra_bg
