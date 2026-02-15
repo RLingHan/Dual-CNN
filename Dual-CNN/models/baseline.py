@@ -340,13 +340,13 @@ class Baseline(nn.Module):
         loss += sp_loss
         metric.update({'sp_loss': sp_loss.data})
 
-        P_logits_mean = p_mod.mean(dim=1)  # [B] logits的均值
-        is_rgb = (sub == 0).float()  # RGB=1, IR=0
-
-        # ✅ 关键: 用 with_logits 版本 (支持AMP)
-        L_mc = F.binary_cross_entropy_with_logits(P_logits_mean, is_rgb)
-        loss += 1.0 * L_mc
-        metric.update({'L_mc': L_mc.data})
+        # P_logits_mean = p_mod.mean(dim=1)  # [B] logits的均值
+        # is_rgb = (sub == 0).float()  # RGB=1, IR=0
+        #
+        # # ✅ 关键: 用 with_logits 版本 (支持AMP)
+        # L_mc = F.binary_cross_entropy_with_logits(P_logits_mean, is_rgb)
+        # loss += 1.0 * L_mc
+        # metric.update({'L_mc': L_mc.data})
 
         if self.triplet:
 
