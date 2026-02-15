@@ -22,7 +22,7 @@ model_urls = {
 }
 
 
-def cross_modality_hallucination(feat_sh, feat_sp, labels, sub, lam=0.3):
+def cross_modality_hallucination(feat_sh, feat_sp, labels, sub, lam=0.1):
     """
     feat_sh: [B, C, H, W] 共享特征
     feat_sp: [B, C, H, W] 特有特征
