@@ -287,6 +287,7 @@ class Baseline(nn.Module):
 
         else:
             self.classifier = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False)
+            self.classifier_sp = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False)
         if self.classification:
             self.id_loss = nn.CrossEntropyLoss(ignore_index=-1)
         if self.triplet:
@@ -447,6 +448,7 @@ class Baseline(nn.Module):
 
         if self.classification:
             logits = self.classifier(feat)
+            logits_sp = self.classifier_sp(sp_pl)
             if self.CSA1:
                 _, intra_bg = Bg_kl(logits[sub == 0], logits[sub == 1])  # 共享和红外对齐
                 bg_loss = intra_bg
@@ -480,7 +482,10 @@ class Baseline(nn.Module):
                 loss += sm_kl_loss
                 metric.update({'sm_kl': sm_kl_loss.data})
             cls_loss = self.id_loss(logits.float(), labels) # 基础识别id的能力
+            cls_loss_sp = self.id_loss(logits_sp.float(), labels)
             loss += cls_loss
+            loss += 0.5 * cls_loss_sp
+            metric.update({'cls_loss_sp': cls_loss_sp.data})
             metric.update({'acc': calc_acc(logits.data, labels), 'id_loss': cls_loss.data})
 
         return loss, metric #对应engine代码下的返回损失和指标

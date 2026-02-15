@@ -6,7 +6,7 @@ from torch.hub import load_state_dict_from_url
 import torch
 import math
 from layers.module.CBAM import cbam
-from models.channel import AdaptiveGlobalModule, MUMModule
+from models.channel import AdaptiveGlobalModule, MUMModule, ISCM
 
 __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
            'resnet152', 'resnext50_32x4d', 'resnext101_32x8d']
@@ -416,11 +416,13 @@ class embed_net(nn.Module):
         self.V_bh = Special_module_bh(drop_last_stride=drop_last_stride)
         self.I_bh = Special_module_bh(drop_last_stride=drop_last_stride)
         self.mum = MUMModule(in_channels=1024)
+        self.icml = ISCM(1024)
 
         self.decompose = decompose
         if self.decompose:
             self.mask1 = Mask(2048)
             self.mask2 = Mask(2048)
+
     def forward(self, x, sub ,labels):
         batch_size = x.size(0)
         x2 = self.shared_module_fr(x)  # (B, 512, H, W)
@@ -439,9 +441,6 @@ class embed_net(nn.Module):
             # 应用自身注意力
             x_v = x_v * v_ca * v_sa
             x_i = x_i * i_ca * i_sa
-            # 跨模态互补增强
-            # out_v = x_v + alpha * x_v * i_ca * i_sa
-            # out_i = x_i + alpha * x_i * v_ca * v_sa
             # 重组
             x2_new = torch.zeros_like(x2)
             x2_new[sub == 0] = x_v
@@ -466,16 +465,19 @@ class embed_net(nn.Module):
         m_sh, m_sp, p_mod = self.mum(x_sh3)
         f_sh = x_sh3 * m_sh
         f_sp = x_sh3 * m_sp
+        f_sh, f_sp = self.icml(f_sh,f_sp)
         # x_sh3 = self.adp_global(x_sh3)  # 全局上下文
         if self.training:
             f_hallu, _ = cross_modality_hallucination(f_sh, f_sp, labels, sub)
             x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_hallu)
+            x_sp = self.shared_module_bh.model_sh_bh.layer4(f_sp)
         else:
             x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_sh)
         # 池化得到最终共享特征
         sh_pl = gem(x_sh4).squeeze()
         sh_pl = sh_pl.view(sh_pl.size(0), -1)
-
+        sp_pl = gem(x_sp).squeeze()
+        sp_pl = sp_pl.view(sp_pl.size(0), -1)
         if self.decompose:
             sp_pl = torch.zeros_like(sh_pl)
 
@@ -500,7 +502,7 @@ class embed_net(nn.Module):
         if self.decompose:
             return sh_pl, alpha, f_sh, f_sp, p_mod ,sp_pl
         else:
-            return sh_pl, alpha, f_sh, f_sp, p_mod ,None
+            return sh_pl, alpha, f_sh, f_sp, p_mod ,sp_pl
 
 
 def _resnet(arch, block, layers, pretrained, progress, **kwargs):
