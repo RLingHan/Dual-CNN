@@ -473,6 +473,7 @@ class embed_net(nn.Module):
             x_sp = self.shared_module_bh.model_sh_bh.layer4(f_sp)
         else:
             x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_sh)
+            x_sp = self.shared_module_bh.model_sh_bh.layer4(f_sp)
         # 池化得到最终共享特征
         sh_pl = gem(x_sh4).squeeze()
         sh_pl = sh_pl.view(sh_pl.size(0), -1)
