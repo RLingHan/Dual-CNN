@@ -41,43 +41,30 @@ class MUMModule(nn.Module):
 
         return mask_sh, mask_sp, P_logits
 
-# Identity-Specific Compensation Module
-class ISCM(nn.Module):
-    def __init__(self, in_dim=1024):
+class FeatureDecomposition(nn.Module):
+    """将特征分解为模态共享和模态特定"""
+
+    def __init__(self, dim, reduction=16):
         super().__init__()
 
-        # 1. 通道注意力 (SE-like)
-        self.id_attention = nn.Sequential(
+        # 学习分解mask
+        self.shared_gate = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(in_dim, in_dim // 4, 1),
+            nn.Conv2d(dim, dim // reduction, 1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(in_dim // 4, in_dim, 1),
+            nn.Conv2d(dim // reduction, dim, 1),
             nn.Sigmoid()
         )
-        # 2. 融合门控 (Gating Parameter)
-        self.beta = nn.Parameter(torch.tensor(0.0))
-        # 3. Instance Normalization
-        # affine=False 很重要，我们要强制去除风格统计量
-        self.in_layer = nn.InstanceNorm2d(in_dim, affine=False)
 
-    def forward(self, f_sh, f_sp, labels=None):
-        """
-        f_sh: 经过 mask_sh 的特征 (Batch, C, H, W)
-        f_sp: 经过 mask_sp 的特征 (Batch, C, H, W)
-        """
-        # --- 步骤 A: 提取有用的 Specific 信息 (Mining) ---
-        # 1. 计算 Attention (即寻找含有 ID 信息的通道)
-        attn_weights = self.id_attention(f_sp)  # [B, C, 1, 1]
-        # 2. 加权筛选
-        f_sp_id = f_sp * attn_weights
-        # --- 步骤 B: 风格剥离 (Style Stripping via IN) ---
-        # 使用 IN 去除模态特定的均值和方差 (即去除了 RGB/IR 的光照/热辐射风格)
-        # 剩下的 f_sp_stripped 理论上只包含结构/形状信息
-        f_sp_id = self.in_layer(f_sp_id)
-        # --- 步骤 C: 补偿融合 (Compensation) ---
-        # f_enhanced = Shared + alpha * Normalize(Specific)
-        f_sh_enhanced = f_sh + self.beta * f_sp_id
-        return f_sh_enhanced, f_sp_id
+    def forward(self, x):
+        # 生成共享/特定mask
+        shared_mask = self.shared_gate(x)  # (B, C, 1, 1)
+        specific_mask = 1 - shared_mask
+
+        feat_shared = x * shared_mask
+        feat_specific = x * specific_mask
+
+        return feat_shared, feat_specific
 
 class GlobalContextBlock(nn.Module):
     """全局上下文注意力"""
@@ -120,7 +107,7 @@ class GlobalContextBlock(nn.Module):
 class LargeKernelAttention(nn.Module):
     """大核注意力"""
 
-    def __init__(self, channels, kernel_size=5):
+    def __init__(self, channels, kernel_size=7):
         super().__init__()
 
         # 深度可分离大核卷积
