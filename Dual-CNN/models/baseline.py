@@ -305,7 +305,7 @@ class Baseline(nn.Module):
         #epoch = kwargs.get('epoch')
         # CNN
         #layer4输出  layer4的语义特征  相互调节后的语义特征 mask前/后模态无关特征 mask前/后特别特征
-        sh_pl, alpha, f_sh, f_sp, sp_pl = self.backbone(inputs,sub=sub,labels=labels)
+        sh_pl, alpha, f_sh, f_sp, p_mod, sp_pl = self.backbone(inputs,sub=sub,labels=labels)
         #提取特征
 
         feats = sh_pl #layer4的语义输出
@@ -323,11 +323,11 @@ class Baseline(nn.Module):
                 return feats
 
         else:
-            return self.train_forward(feats, alpha, f_sh, f_sp,sp_pl, labels,sub, **kwargs)
+            return self.train_forward(feats, alpha, f_sh, f_sp,p_mod, sp_pl, labels,sub, **kwargs)
 
 
 
-    def train_forward(self, feat, alpha, f_sh, f_sp, sp_pl ,labels,sub, **kwargs):
+    def train_forward(self, feat, alpha, f_sh, f_sp, p_mod, sp_pl ,labels,sub, **kwargs):
         epoch = kwargs.get('epoch')
         metric = {}
         loss = 0
@@ -339,6 +339,14 @@ class Baseline(nn.Module):
         sp_loss = self.id_loss(sp_logits.float(), t_sub) #鼓励判别器识别不出sh
         loss += sp_loss
         metric.update({'sp_loss': sp_loss.data})
+
+        P_logits_mean = p_mod.mean(dim=1)  # [B] logits的均值
+        is_rgb = (sub == 0).float()  # RGB=1, IR=0
+
+        # ✅ 关键: 用 with_logits 版本 (支持AMP)
+        L_mc = F.binary_cross_entropy_with_logits(P_logits_mean, is_rgb)
+        loss += 1.0 * L_mc
+        metric.update({'L_mc': L_mc.data})
 
         if self.triplet:
 
@@ -465,7 +473,6 @@ class Baseline(nn.Module):
                         sm_kl_loss += inter_Sm * 0.3
 
             if self.CSA1:
-                bg_loss = bg_loss
                 loss += bg_loss
                 metric.update({'bg_kl': bg_loss.data})
             if self.CSA2:
