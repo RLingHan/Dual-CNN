@@ -213,25 +213,24 @@ class ModalityAlignmentLoss(nn.Module):
         self.temp = temperature
 
     def forward(self, v_feat, i_feat, v_labels, i_labels):
+        # 此时 v_feat 和 v_labels 都是 N=30
         v_feat = F.normalize(v_feat, dim=1)
         i_feat = F.normalize(i_feat, dim=1)
 
-        N = v_feat.size(0)
-        device = v_feat.device
+        # sim 形状为 (30, 30)
         sim = torch.mm(v_feat, i_feat.t()) / self.temp
+
+        # v_labels.unsqueeze(1) -> (30, 1)
+        # i_labels.unsqueeze(0) -> (1, 30)
         labels_eq = v_labels.unsqueeze(1) == i_labels.unsqueeze(0)
 
-        loss_list = []
-        for i in range(N):
-            pos_indices = torch.where(labels_eq[i])[0]
-            if len(pos_indices) > 0:
-                selected = pos_indices[torch.randint(len(pos_indices), (1,)).item()]
-                pos_sim = sim[i, selected]
-                all_sim = sim[i]
-                loss_i = -torch.log(torch.exp(pos_sim) / torch.exp(all_sim).sum())
-                loss_list.append(loss_i)
+        exp_sim = torch.exp(sim)
+        pos_sum = (exp_sim * labels_eq.float()).sum(1)
+        all_sum = exp_sim.sum(1)
 
-        return torch.stack(loss_list).mean() if loss_list else torch.tensor(0.0, device=device)
+        # 增加 1e-8 防止 log(0)
+        loss = -torch.log(pos_sum / (all_sum + 1e-8)).mean()
+        return loss
 
 
 class Baseline(nn.Module):
@@ -265,7 +264,7 @@ class Baseline(nn.Module):
         self.margin = kwargs.get('margin', 0.3)
 
         self.modality_align_loss = ModalityAlignmentLoss()
-        self.align = True
+        self.align = False
 
         # 消融实验
         self.CSA1 = kwargs.get('bg_kl', False)
@@ -306,7 +305,7 @@ class Baseline(nn.Module):
         #epoch = kwargs.get('epoch')
         # CNN
         #layer4输出  layer4的语义特征  相互调节后的语义特征 mask前/后模态无关特征 mask前/后特别特征
-        sh_pl, alpha, f_sh, f_sp, p_mod, sp_pl = self.backbone(inputs,sub=sub,labels=labels)
+        sh_pl, alpha, f_sh, f_sp, sp_pl = self.backbone(inputs,sub=sub,labels=labels)
         #提取特征
 
         feats = sh_pl #layer4的语义输出
@@ -324,11 +323,11 @@ class Baseline(nn.Module):
                 return feats
 
         else:
-            return self.train_forward(feats, alpha, f_sh, f_sp,p_mod, sp_pl, labels,sub, **kwargs)
+            return self.train_forward(feats, alpha, f_sh, f_sp,sp_pl, labels,sub, **kwargs)
 
 
 
-    def train_forward(self, feat, alpha, f_sh, f_sp, p_mod, sp_pl ,labels,sub, **kwargs):
+    def train_forward(self, feat, alpha, f_sh, f_sp, sp_pl ,labels,sub, **kwargs):
         epoch = kwargs.get('epoch')
         metric = {}
         loss = 0
@@ -340,14 +339,6 @@ class Baseline(nn.Module):
         sp_loss = self.id_loss(sp_logits.float(), t_sub) #鼓励判别器识别不出sh
         loss += sp_loss
         metric.update({'sp_loss': sp_loss.data})
-
-        P_logits_mean = p_mod.mean(dim=1)  # [B] logits的均值
-        is_rgb = (sub == 0).float()  # RGB=1, IR=0
-
-        # ✅ 关键: 用 with_logits 版本 (支持AMP)
-        L_mc = F.binary_cross_entropy_with_logits(P_logits_mean, is_rgb)
-        loss += 1.0 * L_mc
-        metric.update({'L_mc': L_mc.data})
 
         if self.triplet:
 
@@ -364,7 +355,7 @@ class Baseline(nn.Module):
             i_labels = labels[sub == 1]
 
             align_loss = self.modality_align_loss(feat[sub == 0], feat[sub == 1], v_labels,i_labels)
-            align_loss = align_loss * 0.5
+            align_loss = align_loss * 0.2
             loss += align_loss
             metric.update({'align_loss': align_loss.data})
 
@@ -474,10 +465,11 @@ class Baseline(nn.Module):
                         sm_kl_loss += inter_Sm * 0.3
 
             if self.CSA1:
+                bg_loss = bg_loss * 0.5
                 loss += bg_loss
                 metric.update({'bg_kl': bg_loss.data})
             if self.CSA2:
-                sm_kl_loss = sm_kl_loss
+                sm_kl_loss = sm_kl_loss * 0.5
                 loss += sm_kl_loss
                 metric.update({'sm_kl': sm_kl_loss.data})
             cls_loss = self.id_loss(logits.float(), labels) # 基础识别id的能力
