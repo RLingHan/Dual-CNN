@@ -429,36 +429,36 @@ class embed_net(nn.Module):
         has_visible = (sub == 0).any()
         has_infrared = (sub == 1).any()
         alpha = torch.sigmoid(self.alpha)
-        # ===== 跨模态CBAM融合 =====
-        if has_visible and has_infrared:
-            # 情况1:双模态都存在 -> 跨模态融合
-            x_v = x2[sub == 0]
-            x_i = x2[sub == 1]
-            v_ca, v_sa = self.v_cbam(x_v)
-            i_ca, i_sa = self.i_cbam(x_i)
-            # 应用自身注意力
-            x_v = x_v * v_ca * v_sa
-            x_i = x_i * i_ca * i_sa
-            # 跨模态互补增强
-            out_v = x_v + alpha * x_v * i_ca * i_sa
-            out_i = x_i + alpha * x_i * v_ca * v_sa
-            # 重组
-            x2_new = torch.zeros_like(x2)
-            x2_new[sub == 0] = out_v
-            x2_new[sub == 1] = out_i
-            x2 = x2_new
-
-        elif has_visible:
-            # 情况2:只有可见光 -> 只用自己的CBAM
-            x_v = x2[sub == 0]
-            v_ca, v_sa = self.v_cbam(x_v)
-            x2[sub == 0] = x_v * v_ca * v_sa
-
-        elif has_infrared:
-            # 情况3:只有红外 -> 只用自己的CBAM
-            x_i = x2[sub == 1]
-            i_ca, i_sa = self.i_cbam(x_i)
-            x2[sub == 1] = x_i * i_ca * i_sa
+        # # ===== 跨模态CBAM融合 =====
+        # if has_visible and has_infrared:
+        #     # 情况1:双模态都存在 -> 跨模态融合
+        #     x_v = x2[sub == 0]
+        #     x_i = x2[sub == 1]
+        #     v_ca, v_sa = self.v_cbam(x_v)
+        #     i_ca, i_sa = self.i_cbam(x_i)
+        #     # 应用自身注意力
+        #     x_v = x_v * v_ca * v_sa
+        #     x_i = x_i * i_ca * i_sa
+        #     # 跨模态互补增强
+        #     out_v = x_v + alpha * x_v * i_ca * i_sa
+        #     out_i = x_i + alpha * x_i * v_ca * v_sa
+        #     # 重组
+        #     x2_new = torch.zeros_like(x2)
+        #     x2_new[sub == 0] = out_v
+        #     x2_new[sub == 1] = out_i
+        #     x2 = x2_new
+        #
+        # elif has_visible:
+        #     # 情况2:只有可见光 -> 只用自己的CBAM
+        #     x_v = x2[sub == 0]
+        #     v_ca, v_sa = self.v_cbam(x_v)
+        #     x2[sub == 0] = x_v * v_ca * v_sa
+        #
+        # elif has_infrared:
+        #     # 情况3:只有红外 -> 只用自己的CBAM
+        #     x_i = x2[sub == 1]
+        #     i_ca, i_sa = self.i_cbam(x_i)
+        #     x2[sub == 1] = x_i * i_ca * i_sa
 
         # 共享分支
         # x_sh3, x_sh4 = self.shared_module_bh(x2)
