@@ -465,11 +465,11 @@ class Baseline(nn.Module):
                         sm_kl_loss += inter_Sm * 0.3
 
             if self.CSA1:
-                bg_loss = bg_loss * 0.5
+                bg_loss = bg_loss
                 loss += bg_loss
                 metric.update({'bg_kl': bg_loss.data})
             if self.CSA2:
-                sm_kl_loss = sm_kl_loss * 0.5
+                sm_kl_loss = sm_kl_loss
                 loss += sm_kl_loss
                 metric.update({'sm_kl': sm_kl_loss.data})
             cls_loss = self.id_loss(logits.float(), labels) # 基础识别id的能力
