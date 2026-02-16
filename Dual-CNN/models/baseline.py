@@ -15,6 +15,7 @@ from layers.loss.rerank_loss import  RerankLoss
 from layers.loss.triplet_loss import TripletLoss
 from layers.loss.local_center_loss import CenterTripletLoss
 from layers.loss.center_loss import CenterLoss
+from layers.loss.circle_loss import CircleLoss
 # from layers import cbam
 # from layers import NonLocalBlockND
 from utils.rerank import re_ranking, pairwise_distance
@@ -266,6 +267,11 @@ class Baseline(nn.Module):
         self.modality_align_loss = ModalityAlignmentLoss()
         self.align = False
 
+        self.circle_criterion = CircleLoss(
+            m=kwargs.get('circle_margin', 0.25),
+            gamma=kwargs.get('circle_gamma', 128)
+        )
+
         # 消融实验
         self.CSA1 = kwargs.get('bg_kl', False)
         self.CSA2 = kwargs.get('sm_kl', False)
@@ -357,6 +363,15 @@ class Baseline(nn.Module):
                 trip_loss += triplet_loss_im
             loss += trip_loss
             metric.update({'tri': trip_loss.data})
+
+        if hasattr(self, 'circle_criterion'):
+            circle_loss = self.circle_criterion(
+                feat.float(),  # 共享特征
+                labels,  # ID标签
+                sub.long()  # 模态标签（会自动区分模态内/跨模态）
+            )
+            loss += circle_loss
+            metric.update({'circle': circle_loss.data})
 
         if self.align:
             v_labels = labels[sub == 0]
