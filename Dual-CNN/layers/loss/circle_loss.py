@@ -5,75 +5,56 @@ import torch.nn.functional as F
 
 class CircleLoss(nn.Module):
     """
-    Circle Loss for VI-ReID (跨模态行人重识别)
-    可作为主损失函数使用
-    论文: Circle Loss: A Unified Perspective of Pair Similarity Optimization
-    参数:
-        m: 边界参数，默认0.25（论文推荐值）
-        gamma: 缩放因子，默认128（论文推荐值，可尝试256获得更强优化）
+    Circle Loss for VI-ReID (修正版)
     """
+
     def __init__(self, m=0.25, gamma=128):
         super(CircleLoss, self).__init__()
-        self.m = m  # margin边界
-        self.gamma = gamma  # scale缩放因子
-        self.soft_plus = nn.Softplus()  # 用于数值稳定的log(1+exp(x))
+        self.m = m
+        self.gamma = gamma
+        self.soft_plus = nn.Softplus()
+
+        # 定义两个目标阈值：
+        # 正样本目标： > 1-m (例如 > 0.75)
+        # 负样本目标： < m   (例如 < 0.25)
+        self.delta_p = 1 - m
+        self.delta_n = m
 
     def forward(self, features, labels, modalities=None):
-        """
-        前向传播
-
-        参数:
-            features: 特征张量 shape=(batch_size, feature_dim)
-            labels: ID标签 shape=(batch_size,)
-            modalities: 模态标签 shape=(batch_size,)，0=可见光 1=红外
-                       如果为None，视为标准Circle Loss
-                       如果提供，则分别优化模态内和跨模态匹配
-
-        返回:
-            loss: Circle Loss损失值（标量）
-        """
-        # 归一化特征到单位球面（强烈推荐，使用余弦相似度）
+        # 归一化特征 (必须)
         features = F.normalize(features, p=2, dim=1)
 
-        # 计算相似度矩阵：features @ features^T
-        # shape: (batch_size, batch_size)
+        # 计算相似度矩阵
         similarity_matrix = torch.matmul(features, features.T)
 
         batch_size = features.size(0)
         labels = labels.contiguous().view(-1, 1)
 
-        # 创建正负样本mask
-        # mask_pos[i,j] = 1 表示i和j是同一个ID（正样本对）
+        # 基础Mask
         mask_pos = torch.eq(labels, labels.T).float()
-        # mask_neg[i,j] = 1 表示i和j是不同ID（负样本对）
         mask_neg = torch.eq(labels, labels.T).logical_not().float()
 
-        # 去除对角线（自己和自己的相似度）
+        # 去除自身 (对角线)
         mask_pos = mask_pos - torch.eye(batch_size, device=features.device)
 
-        # ========== 如果提供了模态信息，则进行模态感知优化 ==========
+        # ========== 模态感知优化 ==========
         if modalities is not None:
             modalities = modalities.contiguous().view(-1, 1)
 
-            # 创建模态mask
-            # mask_same_mod[i,j] = 1 表示i和j来自同一模态
             mask_same_mod = torch.eq(modalities, modalities.T).float()
             mask_diff_mod = torch.eq(modalities, modalities.T).logical_not().float()
 
-            # 去除对角线
+            # 修正：对角线只在 mask_same_mod 中存在，需要再次确保去除
             mask_same_mod = mask_same_mod - torch.eye(batch_size, device=features.device)
 
-            # 分解为4种情况：
-            # 1. 模态内正样本：同模态 + 同ID
+            # 分解Mask
             mask_intra_pos = mask_pos * mask_same_mod
-            # 2. 模态内负样本：同模态 + 不同ID
             mask_intra_neg = mask_neg * mask_same_mod
-            # 3. 跨模态正样本：不同模态 + 同ID
+
             mask_cross_pos = mask_pos * mask_diff_mod
-            # 4. 跨模态负样本：不同模态 + 不同ID
             mask_cross_neg = mask_neg * mask_diff_mod
 
-            # 分别计算模态内和跨模态的Circle Loss
+            # 计算两部分Loss
             loss_intra = self._compute_circle_loss(
                 similarity_matrix, mask_intra_pos, mask_intra_neg
             )
@@ -81,61 +62,63 @@ class CircleLoss(nn.Module):
                 similarity_matrix, mask_cross_pos, mask_cross_neg
             )
 
-            # 总损失：模态内 + 跨模态（权重相等）
-            return loss_intra + loss_cross
+            # 建议：返回平均值或者总和，这里返回总和
+            return (loss_intra + loss_cross) * 0.5
 
-        # ========== 标准Circle Loss（不区分模态） ==========
+            # ========== 标准 Circle Loss ==========
         else:
             return self._compute_circle_loss(similarity_matrix, mask_pos, mask_neg)
 
     def _compute_circle_loss(self, sim_matrix, mask_pos, mask_neg):
-        """
-        计算Circle Loss的核心函数
+        # 如果没有有效的正样本对（极端情况），返回0
+        if mask_pos.sum() == 0:
+            return torch.tensor(0.0, device=sim_matrix.device, requires_grad=True)
 
-        参数:
-            sim_matrix: 相似度矩阵 shape=(B, B)
-            mask_pos: 正样本对mask shape=(B, B)
-            mask_neg: 负样本对mask shape=(B, B)
+        # 提取相似度
+        sim_pos = sim_matrix * mask_pos
+        sim_neg = sim_matrix * mask_neg
 
-        返回:
-            loss: Circle Loss值
-        """
-        # 提取正负样本的相似度
-        sim_pos = sim_matrix * mask_pos  # f_j^{t+}
-        sim_neg = sim_matrix * mask_neg  # f_i^{t-}
-
-        # 计算自适应权重（detach阻止梯度回传到权重）
-        # α_pos = [1 + m - sim_pos]_+  （正样本权重）
+        # 1. 计算自适应权重 Alpha (论文公式)
+        # detach() 很重要，防止梯度回传到权重计算中
         alpha_pos = torch.clamp_min(1 + self.m - sim_pos.detach(), min=0.)
-        # α_neg = [sim_neg + m]_+  （负样本权重）
         alpha_neg = torch.clamp_min(sim_neg.detach() + self.m, min=0.)
 
-        # 计算加权后的logits
-        # 正样本项: -α_pos * (sim_pos - m)
-        logits_pos = -alpha_pos * (sim_pos - self.m) * self.gamma
-        # 负样本项: α_neg * (sim_neg + m)
-        logits_neg = alpha_neg * (sim_neg + self.m) * self.gamma
+        # 2. 计算加权 Logits (关键修正处!)
+        # 正样本: 目标是 sim_pos > (1-m)
+        # 原始公式: - gamma * alpha * (s_p - delta_p)
+        logits_pos = -alpha_pos * (sim_pos - self.delta_p) * self.gamma
 
-        # 只保留有效的正负样本对
-        logits_pos = logits_pos * mask_pos
-        logits_neg = logits_neg * mask_neg
+        # 负样本: 目标是 sim_neg < m
+        # 原始公式: gamma * alpha * (s_n - delta_n)
+        logits_neg = alpha_neg * (sim_neg - self.delta_n) * self.gamma
 
-        # 计算损失：log[1 + Σexp(logits_neg) · Σexp(logits_pos)]
-        # 使用LogSumExp技巧保证数值稳定
-        neg_exp = torch.exp(logits_neg) * mask_neg
-        pos_exp = torch.exp(logits_pos) * mask_pos
+        # 3. 各种Mask处理 (保持原逻辑，利用logsumexp技巧)
+        # 对正样本: 为了数值稳定，无效位置设为负无穷
+        logits_pos = logits_pos * mask_pos + (1 - mask_pos) * (-1e12)
+        # 对负样本: 无效位置设为负无穷
+        logits_neg = logits_neg * mask_neg + (1 - mask_neg) * (-1e12)
 
-        # 对每个anchor，求和所有负样本
-        neg_term = neg_exp.sum(dim=1, keepdim=True)  # shape: (B, 1)
-        # 对每个anchor，求和所有正样本
-        pos_term = pos_exp.sum(dim=1)  # shape: (B,)
+        # 4. LogSumExp
+        # 找出每行的最大值用于数值稳定
+        max_pos = logits_pos.max(dim=1, keepdim=True)[0].detach()
+        max_neg = logits_neg.max(dim=1, keepdim=True)[0].detach()
 
-        # soft_plus(log(1 + x)) = log(1 + exp(log(1 + x)))
-        loss = self.soft_plus(torch.log(1 + neg_term * pos_term + 1e-8))
+        # LogSumExp 计算
+        # exp(x - max) 防止溢出
+        pos_exp = torch.exp(logits_pos - max_pos) * mask_pos
+        neg_exp = torch.exp(logits_neg - max_neg) * mask_neg
 
-        # 归一化：除以每个样本的正样本对数量
-        num_valid_pairs = mask_pos.sum(dim=1).clamp(min=1.0)
-        loss = loss / num_valid_pairs.unsqueeze(1)
+        logsumexp_pos = max_pos + torch.log(pos_exp.sum(dim=1, keepdim=True) + 1e-12)
+        logsumexp_neg = max_neg + torch.log(neg_exp.sum(dim=1, keepdim=True) + 1e-12)
 
-        # 返回batch平均损失
-        return loss.mean()
+        # 5. Final Loss
+        # loss = softplus(logsumexp_neg + logsumexp_pos)
+        loss = self.soft_plus(logsumexp_neg + logsumexp_pos)
+
+        # 6. Mean Loss
+        # 只计算那些确实有正样本对的行
+        valid_rows = (mask_pos.sum(dim=1) > 0).float()
+        if valid_rows.sum() == 0:
+            return torch.tensor(0.0, device=sim_matrix.device, requires_grad=True)
+
+        return (loss * valid_rows.view(-1, 1)).sum() / valid_rows.sum()
