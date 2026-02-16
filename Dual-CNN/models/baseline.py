@@ -371,6 +371,7 @@ class Baseline(nn.Module):
                 sub.long()  # 模态标签（会自动区分模态内/跨模态）
             )
             loss += circle_loss
+            circle_loss = circle_loss * 0.15
             metric.update({'circle': circle_loss.data})
 
         if self.align:
