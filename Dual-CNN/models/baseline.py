@@ -364,15 +364,15 @@ class Baseline(nn.Module):
             loss += trip_loss
             metric.update({'tri': trip_loss.data})
 
-        if hasattr(self, 'circle_criterion'):
-            circle_loss = self.circle_criterion(
-                feat.float(),  # 共享特征
-                labels,  # ID标签
-                sub.long()  # 模态标签（会自动区分模态内/跨模态）
-            )
-            loss += circle_loss
-            circle_loss = circle_loss * 0.15
-            metric.update({'circle': circle_loss.data})
+        # if hasattr(self, 'circle_criterion'):
+        #     circle_loss = self.circle_criterion(
+        #         feat.float(),  # 共享特征
+        #         labels,  # ID标签
+        #         sub.long()  # 模态标签（会自动区分模态内/跨模态）
+        #     )
+        #     loss += circle_loss
+        #     circle_loss = circle_loss * 0.15
+        #     metric.update({'circle': circle_loss.data})
 
         if self.align:
             v_labels = labels[sub == 0]
