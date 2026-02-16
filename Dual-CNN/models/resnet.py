@@ -475,7 +475,8 @@ class embed_net(nn.Module):
         # x_sh3 = self.adp_global(x_sh3)  # 全局上下文
         if self.training:
             # f_hallu, _ = cross_modality_hallucination(f_sh, f_sp, labels, sub)
-            x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_hallu)
+            # x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_hallu)
+            x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_sh)
             # x_sh4 = self.mada(x_sh4, sub)
         else:
             x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_sh)
