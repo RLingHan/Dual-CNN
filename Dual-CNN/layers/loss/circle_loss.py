@@ -70,53 +70,44 @@ class CircleLoss(nn.Module):
             return self._compute_circle_loss(similarity_matrix, mask_pos, mask_neg)
 
     def _compute_circle_loss(self, sim_matrix, mask_pos, mask_neg):
-        # 如果没有有效的正样本对（极端情况），返回0
         if mask_pos.sum() == 0:
             return torch.tensor(0.0, device=sim_matrix.device, requires_grad=True)
 
-        # 提取相似度
         sim_pos = sim_matrix * mask_pos
         sim_neg = sim_matrix * mask_neg
 
-        # 1. 计算自适应权重 Alpha (论文公式)
-        # detach() 很重要，防止梯度回传到权重计算中
+        # 1. 计算权重 Beta (对应图片中的 alpha/beta)
+        # beta_pos = [1 + m - sim_pos]_+
         alpha_pos = torch.clamp_min(1 + self.m - sim_pos.detach(), min=0.)
+        # beta_neg = [sim_neg + m]_+
         alpha_neg = torch.clamp_min(sim_neg.detach() + self.m, min=0.)
 
-        # 2. 计算加权 Logits (关键修正处!)
-        # 正样本: 目标是 sim_pos > (1-m)
-        # 原始公式: - gamma * alpha * (s_p - delta_p)
-        logits_pos = -alpha_pos * (sim_pos - self.delta_p) * self.gamma
+        # 2. 计算 Logits (核心修正处)
 
-        # 负样本: 目标是 sim_neg < m
-        # 原始公式: gamma * alpha * (s_n - delta_n)
-        logits_neg = alpha_neg * (sim_neg - self.delta_n) * self.gamma
+        # [正样本] 对应图片: gamma * beta * (-f + m - 1)
+        # 这里的 (1 - self.m) 就是阈值 Delta_p
+        # 变换一下写法方便理解: -1 * gamma * alpha * (sim_pos - (1 - self.m))
+        logits_pos = -alpha_pos * (sim_pos - (1 - self.m)) * self.gamma
 
-        # 3. 各种Mask处理 (保持原逻辑，利用logsumexp技巧)
-        # 对正样本: 为了数值稳定，无效位置设为负无穷
+        # [负样本] 对应图片: gamma * beta * (f + m)
+        # 注意：图片里的负样本阈值设定比较严格，是 -m
+        logits_neg = alpha_neg * (sim_neg + self.m) * self.gamma
+
+        # 3. LogSumExp (保持不变，这是数学上求log(sum(exp))的标准写法)
         logits_pos = logits_pos * mask_pos + (1 - mask_pos) * (-1e12)
-        # 对负样本: 无效位置设为负无穷
         logits_neg = logits_neg * mask_neg + (1 - mask_neg) * (-1e12)
 
-        # 4. LogSumExp
-        # 找出每行的最大值用于数值稳定
         max_pos = logits_pos.max(dim=1, keepdim=True)[0].detach()
         max_neg = logits_neg.max(dim=1, keepdim=True)[0].detach()
 
-        # LogSumExp 计算
-        # exp(x - max) 防止溢出
         pos_exp = torch.exp(logits_pos - max_pos) * mask_pos
         neg_exp = torch.exp(logits_neg - max_neg) * mask_neg
 
         logsumexp_pos = max_pos + torch.log(pos_exp.sum(dim=1, keepdim=True) + 1e-12)
         logsumexp_neg = max_neg + torch.log(neg_exp.sum(dim=1, keepdim=True) + 1e-12)
 
-        # 5. Final Loss
-        # loss = softplus(logsumexp_neg + logsumexp_pos)
         loss = self.soft_plus(logsumexp_neg + logsumexp_pos)
 
-        # 6. Mean Loss
-        # 只计算那些确实有正样本对的行
         valid_rows = (mask_pos.sum(dim=1) > 0).float()
         if valid_rows.sum() == 0:
             return torch.tensor(0.0, device=sim_matrix.device, requires_grad=True)
