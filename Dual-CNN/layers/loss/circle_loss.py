@@ -8,7 +8,7 @@ class CircleLoss(nn.Module):
     Circle Loss for VI-ReID (修正版)
     """
 
-    def __init__(self, m=0.25, gamma=128):
+    def __init__(self, m=0.25, gamma=64):
         super(CircleLoss, self).__init__()
         self.m = m
         self.gamma = gamma
