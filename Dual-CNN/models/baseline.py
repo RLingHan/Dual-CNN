@@ -499,8 +499,8 @@ class Baseline(nn.Module):
             loss += cls_loss
             metric.update({'acc': calc_acc(logits.data, labels), 'id_loss': cls_loss.data})
 
-        cos_sim_sh = F.cosine_similarity(f_sh[sub == 0], f_sh[sub == 1])  # 应该偏高
-        cos_sim_sp = F.cosine_similarity(f_sp[sub == 0], f_sp[sub == 1])  # 应该偏低
+        cos_sim_sh = F.cosine_similarity(f_sh[sub == 0], f_sh[sub == 1]).mean()
+        cos_sim_sp = F.cosine_similarity(f_sp[sub == 0], f_sp[sub == 1]).mean()
         metric.update({'cos_sim_sh': cos_sim_sh.data})
         metric.update({'cos_sim_sp': cos_sim_sp.data})
 
