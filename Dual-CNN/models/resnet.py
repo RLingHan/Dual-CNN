@@ -422,10 +422,6 @@ class embed_net(nn.Module):
             num_parts=3  # 分成3个part (头、躯干、腿)
         )
 
-        self.decompose = decompose
-        if self.decompose:
-            self.mask1 = Mask(2048)
-            self.mask2 = Mask(2048)
     def forward(self, x, sub ,labels):
         batch_size = x.size(0)
         x2 = self.shared_module_fr(x)  # (B, 512, H, W)
@@ -485,31 +481,7 @@ class embed_net(nn.Module):
         sh_pl = gem(x_sh4).squeeze()
         sh_pl = sh_pl.view(sh_pl.size(0), -1)
 
-        if self.decompose:
-            sp_pl = torch.zeros_like(sh_pl)
-
-            if has_visible:
-                x_v3, x_v4 = self.V_bh(x2[sub == 0])
-                v_m = self.mask1(x_v4)
-                x_v4 = v_m * x_v4
-                v_pl = gem(x_v4).squeeze()
-                if v_pl.numel() > 0:
-                    v_pl = v_pl.view(v_pl.size(0), -1)
-                    sp_pl[sub == 0] = v_pl
-
-            if has_infrared:
-                x_i3, x_i4 = self.I_bh(x2[sub == 1])
-                x_m = self.mask2(x_i4)
-                x_i4 = x_m * x_i4
-                i_pl = gem(x_i4).squeeze()
-                if i_pl.numel() > 0:
-                    i_pl = i_pl.view(i_pl.size(0), -1)
-                    sp_pl[sub == 1] = i_pl
-
-        if self.decompose:
-            return sh_pl, alpha, f_sh, f_sp, p_mod ,sp_pl
-        else:
-            return sh_pl, alpha, f_sh, f_sp, p_mod ,None
+        return sh_pl, alpha, f_sh, f_sp, p_mod
 
 
 def _resnet(arch, block, layers, pretrained, progress, **kwargs):

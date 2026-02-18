@@ -239,8 +239,7 @@ class Baseline(nn.Module):
         super(Baseline, self).__init__()
 
         self.drop_last_stride = drop_last_stride
-        self.decompose = decompose
-        self.backbone = embed_net(drop_last_stride=drop_last_stride, decompose=decompose)
+        self.backbone = embed_net(drop_last_stride=drop_last_stride)
 
         self.base_dim = 2048
         self.dim = 0
@@ -264,14 +263,6 @@ class Baseline(nn.Module):
         self.center_loss = kwargs.get('center', False)
         self.margin = kwargs.get('margin', 0.3)
 
-        self.modality_align_loss = ModalityAlignmentLoss()
-        self.align = False
-
-        self.circle_criterion = CircleLoss(
-            m=kwargs.get('circle_margin', 0.25),
-            gamma=kwargs.get('circle_gamma', 128)
-        )
-
         # 消融实验
         self.CSA1 = kwargs.get('bg_kl', False)
         self.CSA2 = kwargs.get('sm_kl', False)
@@ -285,14 +276,8 @@ class Baseline(nn.Module):
         self.D_shared_pseu = Discrimination()  # 伪模态分类器（共享特征分支）
         self.special_D = convDiscrimination(1024)
 
-        if self.decompose:
-            self.classifier = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False) # 主分类器（共享特征）
-            self.classifier_sp = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False) # 特有模态分类器
-            self.D_special = Discrimination() # 判别当前特征来自哪种模态
-            self.C_sp_f = nn.Linear(self.base_dim, num_classes, bias=False) # 用于熵边界约束
+        self.classifier = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False)
 
-        else:
-            self.classifier = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False)
         if self.classification:
             self.id_loss = nn.CrossEntropyLoss(ignore_index=-1)
         if self.triplet:
@@ -311,7 +296,7 @@ class Baseline(nn.Module):
         #epoch = kwargs.get('epoch')
         # CNN
         #layer4输出  layer4的语义特征  相互调节后的语义特征 mask前/后模态无关特征 mask前/后特别特征
-        sh_pl, alpha, f_sh, f_sp, p_mod, sp_pl = self.backbone(inputs,sub=sub,labels=labels)
+        sh_pl, alpha, f_sh, f_sp, p_mod = self.backbone(inputs,sub=sub,labels=labels)
         #提取特征
 
         feats = sh_pl #layer4的语义输出
@@ -329,11 +314,11 @@ class Baseline(nn.Module):
                 return feats
 
         else:
-            return self.train_forward(feats, alpha, f_sh, f_sp,p_mod, sp_pl, labels,sub, **kwargs)
+            return self.train_forward(feats, alpha, f_sh, f_sp,p_mod, labels,sub, **kwargs)
 
 
 
-    def train_forward(self, feat, alpha, f_sh, f_sp, p_mod, sp_pl ,labels,sub, **kwargs):
+    def train_forward(self, feat, alpha, f_sh, f_sp, p_mod ,labels,sub, **kwargs):
         epoch = kwargs.get('epoch')
         metric = {}
         loss = 0
@@ -346,42 +331,12 @@ class Baseline(nn.Module):
         loss += sp_loss
         metric.update({'sp_loss': sp_loss.data})
 
-        # P_logits_mean = p_mod.mean(dim=1)  # [B] logits的均值
-        # is_rgb = (sub == 0).float()  # RGB=1, IR=0
-        #
-        # # ✅ 关键: 用 with_logits 版本 (支持AMP)
-        # L_mc = F.binary_cross_entropy_with_logits(P_logits_mean, is_rgb)
-        # loss += 1.0 * L_mc
-        # metric.update({'L_mc': L_mc.data})
-
         if self.triplet:
 
             triplet_loss, _, _, _ = self.triplet_loss(feat.float(), labels) # 共享特征
             trip_loss = triplet_loss
-            if self.decompose:
-                triplet_loss_im, _, _, _ = self.triplet_loss(sp_pl.float(), labels)
-                trip_loss += triplet_loss_im
-            loss += trip_loss
+            loss += triplet_loss
             metric.update({'tri': trip_loss.data})
-
-        # if hasattr(self, 'circle_criterion'):
-        #     circle_loss = self.circle_criterion(
-        #         feat.float(),  # 共享特征
-        #         labels,  # ID标签
-        #         sub.long()  # 模态标签（会自动区分模态内/跨模态）
-        #     )
-        #     loss += circle_loss
-        #     circle_loss = circle_loss * 0.15
-        #     metric.update({'circle': circle_loss.data})
-
-        if self.align:
-            v_labels = labels[sub == 0]
-            i_labels = labels[sub == 1]
-
-            align_loss = self.modality_align_loss(feat[sub == 0], feat[sub == 1], v_labels,i_labels)
-            align_loss = align_loss * 0.2
-            loss += align_loss
-            metric.update({'align_loss': align_loss.data})
 
         bb = 120  #90
 
@@ -399,22 +354,12 @@ class Baseline(nn.Module):
             _, kl_intra2 = Bg_kl(sf_sh_dist_v, sf_sh_dist_vi)
             _, kl_intra3 = Bg_kl(sf_sh_dist_vi, sf_sh_dist_i)
             kl_intra = kl_intra1 + kl_intra2 + kl_intra3
-            if self.decompose:
-                sf_sp_dist_v = kl_soft_dist(sp_pl[sub == 0], sp_pl[sub == 0])  # 可见光模态特定特征的非对角距离分布
-                sf_sp_dist_i = kl_soft_dist(sp_pl[sub == 1], sp_pl[sub == 1])
-                _, kl_inter_v = Bg_kl(sf_sh_dist_v, sf_sp_dist_v) #模型特征模仿特定特征 对齐visible
-                _, kl_inter_i = Bg_kl(sf_sh_dist_i, sf_sp_dist_i) #模型特征模仿特定特征 对齐infrared
-                kl_inter = kl_inter_v + kl_inter_i
+
             # 如果当前批次是完整的（例如 120），使用正常的加权方式。
             if feat.size(0) == bb:
                 soft_dt = kl_intra
-                if self.decompose:
-                    soft_dt += kl_inter * 0.6
-            # 批次不完整采取更小的权重
             else:
                 soft_dt = kl_intra1 * 0.1
-                if self.decompose:
-                    soft_dt += kl_inter * 0.1
 
             loss += soft_dt
             metric.update({'soft_dt': soft_dt.data})
@@ -432,27 +377,16 @@ class Baseline(nn.Module):
             metric.update({'cc': center_cluster_loss.data})
 
         # 同时约束模态共享特征（feat）和模态特定特征（sp_pl）的判别力
-        if self.fb_dt and self.decompose:
+        if self.fb_dt:
             loss_f_d_ap = Fb_dt(feat, labels) #模态共享特征
-            loss_Fb_im = Fb_dt(sp_pl, labels) #模态特定特征
-            fb_loss = loss_f_d_ap + loss_Fb_im
+            fb_loss = loss_f_d_ap
             loss += fb_loss
 
             metric.update({'f_dt': fb_loss.data})
 
         feat = self.bn_neck(feat)
-        if self.decompose:
-            sp_pl = self.bn_neck_sp(sp_pl)
-        sub_nb = sub + 0  ##模态标签
 
-        if self.decompose:
-            logits_sp = self.classifier_sp(sp_pl)  # self.bn_neck_un(sp_pl) sp分类得分
-            loss_id_sp = self.id_loss(logits_sp.float(), labels) # 交叉熵损失
-            sp_logits = self.D_special(sp_pl)  #F_sp输入给判别器
-            discr_loss = self.id_loss(sp_logits.float(), sub_nb) #鼓励判别器识别sp
-            metric.update({'discriminate_loss': discr_loss.data})
-            metric.update({'loss_id_sp': loss_id_sp.data})
-            loss += loss_id_sp + discr_loss
+        sub_nb = sub + 0  ##模态标签
 
         pseu_sh_logits = self.D_shared_pseu(feat) #F_sh
         p_sub = sub_nb.chunk(2)[0].repeat_interleave(2) #构造标签
@@ -466,35 +400,15 @@ class Baseline(nn.Module):
             if self.CSA1:
                 _, intra_bg = Bg_kl(logits[sub == 0], logits[sub == 1])  # 共享和红外对齐
                 bg_loss = intra_bg
-            if self.CSA2:
-                _, intra_Sm = Sm_kl(logits[sub == 0], logits[sub == 1], labels)  # 模态互相学习
-                sm_kl_loss = intra_Sm
-            if self.decompose:
-                if self.CSA1:
-                    _, inter_bg_v = Bg_kl(logits[sub == 0], logits_sp[sub == 0]) #强制共享可见光 Logits 模仿特定可见光 Logits
-                    _, inter_bg_i = Bg_kl(logits[sub == 1], logits_sp[sub == 1]) #强制共享红外光 Logits 模仿特定可见光 Logits
-                    inter_bg = inter_bg_v + inter_bg_i
-                    if feat.size(0) == bb:
-                        bg_loss += inter_bg * 0.8
-                    else:
-                        bg_loss += inter_bg * 0.3
-
-                if self.CSA2:
-                    _, inter_Sm_v = Sm_kl(logits[sub == 0], logits_sp[sub == 0], labels) # sh Logits 在批次内语义结构上模仿sp Logits
-                    _, inter_Sm_i = Sm_kl(logits[sub == 1], logits_sp[sub == 1], labels)
-                    inter_Sm = inter_Sm_v + inter_Sm_i # 隐式蒸馏
-                    if feat.size(0) == bb:
-                        sm_kl_loss += inter_Sm * 0.8
-                    else:
-                        sm_kl_loss += inter_Sm * 0.3
-
-            if self.CSA1:
                 loss += bg_loss
                 metric.update({'bg_kl': bg_loss.data})
             if self.CSA2:
+                _, intra_Sm = Sm_kl(logits[sub == 0], logits[sub == 1], labels)  # 模态互相学习
+                sm_kl_loss = intra_Sm
                 sm_kl_loss = sm_kl_loss
                 loss += sm_kl_loss
                 metric.update({'sm_kl': sm_kl_loss.data})
+
             cls_loss = self.id_loss(logits.float(), labels) # 基础识别id的能力
             loss += cls_loss
             metric.update({'acc': calc_acc(logits.data, labels), 'id_loss': cls_loss.data})
