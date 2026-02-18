@@ -501,6 +501,8 @@ class Baseline(nn.Module):
 
         cos_sim_sh = F.cosine_similarity(f_sh[sub == 0], f_sh[sub == 1]).mean()
         cos_sim_sp = F.cosine_similarity(f_sp[sub == 0], f_sp[sub == 1]).mean()
+        decompose_loss = F.relu(-cos_sim_sh + cos_sim_sp + 0.1)
+        loss += decompose_loss * 0.5
         metric.update({'cos_sim_sh': cos_sim_sh.data})
         metric.update({'cos_sim_sp': cos_sim_sp.data})
 
