@@ -400,7 +400,7 @@ class Baseline(nn.Module):
             if feat.size(0) == bb:
                 soft_dt = kl_intra1
             else:
-                soft_dt = kl_intra1 * 0.1
+                soft_dt = kl_intra1
 
             loss += soft_dt
             metric.update({'soft_dt': soft_dt.data})
