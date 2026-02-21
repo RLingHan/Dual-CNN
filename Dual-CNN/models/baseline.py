@@ -20,6 +20,43 @@ from layers.loss.circle_loss import CircleLoss
 # from layers import NonLocalBlockND
 from utils.rerank import re_ranking, pairwise_distance
 
+def CPDA(feat, sub, labels):
+    feat_v = feat[sub == 0]       # [60, C]
+    feat_i = feat[sub == 1]       # [60, C]
+    labels_v = labels[sub == 0]   # [60]
+    labels_i = labels[sub == 1]   # [60]
+
+    N = feat_v.size(0)  # 60
+
+    dist_v = pairwise_dist(feat_v, feat_v)  # [60, 60]
+    dist_i = pairwise_dist(feat_i, feat_i)  # [60, 60]
+
+    # 构建同类/异类 mask [60, 60]
+    label_mat = labels_v.unsqueeze(1) == labels_v.unsqueeze(0)  # [60,60] bool
+    # labels_v == labels_i（同身份对应），所以用labels_v构建即可
+    eye = torch.eye(N, dtype=torch.bool, device=feat.device)
+
+    pos_mask = label_mat & ~eye   # 同类且非自己 [60,60]
+    neg_mask = ~label_mat         # 异类 [60,60]
+
+    # 每行的pos距离：[60, 4]（每个ID5张，同类非自己=4个）
+    # 每行的neg距离：[60, 55]（其余55个异类）
+    pos_dist_v = dist_v[pos_mask].view(N, -1)   # [60, 4]
+    neg_dist_v = dist_v[neg_mask].view(N, -1)   # [60, 55]
+    pos_dist_i = dist_i[pos_mask].view(N, -1)   # [60, 4]
+    neg_dist_i = dist_i[neg_mask].view(N, -1)   # [60, 55]
+
+    # 对称KL，逐行对齐，batchmean
+    KL = nn.KLDivLoss(reduction='batchmean')
+
+    loss_pos = (KL(F.log_softmax(pos_dist_v, -1), F.softmax(pos_dist_i, -1)) +
+                KL(F.log_softmax(pos_dist_i, -1), F.softmax(pos_dist_v, -1)))
+
+    loss_neg = (KL(F.log_softmax(neg_dist_v, -1), F.softmax(neg_dist_i, -1)) +
+                KL(F.log_softmax(neg_dist_i, -1), F.softmax(neg_dist_v, -1)))
+
+    return loss_pos + loss_neg
+
 def intersect1d(tensor1, tensor2):
     #找出 tensor1 和 tensor2 中的共有元素
     return torch.unique(torch.cat([tensor1[tensor1 == val] for val in tensor2]))
@@ -340,24 +377,28 @@ class Baseline(nn.Module):
 
         bb = 120  #90
 
+        # cpda_loss = CPDA(feat,sub,labels)
+        # loss += cpda_loss
+        # metric.update({'cpda_loss': cpda_loss.data})
+
         if self.TGSA:
             sf_sh_dist_v = kl_soft_dist(feat[sub == 0], feat[sub == 0])
             sf_sh_dist_i = kl_soft_dist(feat[sub == 1], feat[sub == 1])
             #可见光和红外光共享各取一半拼接
-            half_B0 = feat[sub == 0].shape[0] // 2
-            feat_half0 = feat[sub == 0][:half_B0]
-            half_B1 = feat[sub == 1].shape[0] // 2
-            feat_half1 = feat[sub == 1][:half_B1]
-            feat_cross = torch.cat((feat_half0, feat_half1), dim=0)
-            sf_sh_dist_vi = kl_soft_dist(feat_cross, feat_cross) #得到跨模态共享特征的距离分布
+            # half_B0 = feat[sub == 0].shape[0] // 2
+            # feat_half0 = feat[sub == 0][:half_B0]
+            # half_B1 = feat[sub == 1].shape[0] // 2
+            # feat_half1 = feat[sub == 1][:half_B1]
+            # feat_cross = torch.cat((feat_half0, feat_half1), dim=0)
+            # sf_sh_dist_vi = kl_soft_dist(feat_cross, feat_cross) #得到跨模态共享特征的距离分布
             _, kl_intra1 = Bg_kl(sf_sh_dist_v, sf_sh_dist_i)
-            _, kl_intra2 = Bg_kl(sf_sh_dist_v, sf_sh_dist_vi)
-            _, kl_intra3 = Bg_kl(sf_sh_dist_vi, sf_sh_dist_i)
-            kl_intra = kl_intra1 + kl_intra2 + kl_intra3
+            # _, kl_intra2 = Bg_kl(sf_sh_dist_v, sf_sh_dist_vi)
+            # _, kl_intra3 = Bg_kl(sf_sh_dist_vi, sf_sh_dist_i)
+            # kl_intra = kl_intra1 + kl_intra2 + kl_intra3
 
             # 如果当前批次是完整的（例如 120），使用正常的加权方式。
             if feat.size(0) == bb:
-                soft_dt = kl_intra
+                soft_dt = kl_intra1
             else:
                 soft_dt = kl_intra1 * 0.1
 
