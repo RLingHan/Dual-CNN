@@ -15,7 +15,7 @@ bg_kl: true
 sm_kl: true
 decompose: false
 IP: true
-distalign: false
+distalign: true
 classification: true
 center_cluster: false
 triplet: true
