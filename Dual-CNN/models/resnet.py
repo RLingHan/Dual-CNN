@@ -419,9 +419,11 @@ class embed_net(nn.Module):
         self.I_bh = Special_module_bh(drop_last_stride=drop_last_stride)
         self.mum = MUMModule(in_channels=1024)
         self.mada = PartSoftmaxAttention(
-            in_channels=1024,
+            in_channels=2048,
             num_parts=6
         )
+
+        self.ms3m = MS3M(in_channels=1024, reduction=16, scales=[3, 5, 7])
 
     def forward(self, x, sub ,labels):
         batch_size = x.size(0)
@@ -465,7 +467,6 @@ class embed_net(nn.Module):
         # 共享分支
         # x_sh3, x_sh4 = self.shared_module_bh(x2)
         x_sh3 = self.shared_module_bh.model_sh_bh.layer3(x2)
-        x_sh3 = self.mada(x_sh3)
         m_sh, m_sp, p_mod = self.mum(x_sh3)
         f_sh = x_sh3 * m_sh
         f_sp = x_sh3 * m_sp
@@ -474,10 +475,10 @@ class embed_net(nn.Module):
             f_hallu, _ = cross_modality_hallucination(f_sh, f_sp, labels, sub)
             x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_hallu)
             # x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_sh)
-            # x_sh4 = self.mada(x_sh4, sub)
+            x_sh4 = self.mada(x_sh4)
         else:
             x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_sh)
-            # x_sh4 = self.mada(x_sh4, sub)
+            x_sh4 = self.mada(x_sh4)
         # 池化得到最终共享特征
         sh_pl = gem(x_sh4).squeeze()
         sh_pl = sh_pl.view(sh_pl.size(0), -1)
