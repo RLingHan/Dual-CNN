@@ -278,6 +278,7 @@ class Baseline(nn.Module):
         self.special_D = convDiscrimination(1024)
 
         self.classifier = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False)
+        self.sp_classifier = nn.Linear(1024, num_classes, bias=False)
 
         if self.classification:
             self.id_loss = nn.CrossEntropyLoss(ignore_index=-1)
@@ -421,5 +422,12 @@ class Baseline(nn.Module):
         # loss += decompose_loss * 0.5
         metric.update({'cos_sim_sh': cos_sim_sh.data})
         metric.update({'cos_sim_sp': cos_sim_sp.data})
+
+        f_sp_pool = F.avg_pool2d(f_sp, f_sp.size()[2:]).squeeze()
+        f_sp_pool = f_sp_pool.view(f_sp_pool.size(0), -1)  # [B, 1024]
+        sp_id_logits = self.sp_classifier(f_sp_pool)  # 需要在__init__里加这个分类器
+        sp_id_loss = self.id_loss(sp_id_logits.float(), labels)
+        loss += sp_id_loss * 0.5  # 权重小一点，避免抢主分支
+        metric.update({'sp_id_loss': sp_id_loss.data})
 
         return loss, metric #对应engine代码下的返回损失和指标
