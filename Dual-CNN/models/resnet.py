@@ -8,6 +8,7 @@ import math
 from layers.module.CBAM import cbam
 from models.channel import AdaptiveGlobalModule, MUMModule
 from models.mada import PartSoftmaxAttention
+from models.ms3m import MS3M
 
 __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
            'resnet152', 'resnext50_32x4d', 'resnext101_32x8d']
@@ -464,7 +465,7 @@ class embed_net(nn.Module):
         # 共享分支
         # x_sh3, x_sh4 = self.shared_module_bh(x2)
         x_sh3 = self.shared_module_bh.model_sh_bh.layer3(x2)
-        # x_sh3 = self.mada(x_sh3, sub)
+        x_sh3 = self.mada(x_sh3, sub)
         m_sh, m_sp, p_mod = self.mum(x_sh3)
         f_sh = x_sh3 * m_sh
         f_sp = x_sh3 * m_sp
