@@ -47,4 +47,5 @@ class cbam(nn.Module):
         ca = self.ca(x)
         x = x * ca
         sa = self.sa(x)
-        return ca, sa
+        x = x * sa
+        return x
