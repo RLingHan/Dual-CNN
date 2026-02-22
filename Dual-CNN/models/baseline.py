@@ -20,6 +20,7 @@ from layers.loss.circle_loss import CircleLoss
 # from layers import NonLocalBlockND
 from utils.rerank import re_ranking, pairwise_distance
 
+
 def intersect1d(tensor1, tensor2):
     #找出 tensor1 和 tensor2 中的共有元素
     return torch.unique(torch.cat([tensor1[tensor1 == val] for val in tensor2]))
@@ -324,8 +325,8 @@ class Baseline(nn.Module):
         loss = 0
 
         metric.update({'alpha': alpha.data})
-
         t_sub = sub.long()
+
         sp_logits = self.special_D(f_sp) #F_sh
         sp_loss = self.id_loss(sp_logits.float(), t_sub) #鼓励判别器识别不出sh
         loss += sp_loss
@@ -345,20 +346,20 @@ class Baseline(nn.Module):
             sf_sh_dist_v = kl_soft_dist(feat[sub == 0], feat[sub == 0])
             sf_sh_dist_i = kl_soft_dist(feat[sub == 1], feat[sub == 1])
             #可见光和红外光共享各取一半拼接
-            half_B0 = feat[sub == 0].shape[0] // 2
-            feat_half0 = feat[sub == 0][:half_B0]
-            half_B1 = feat[sub == 1].shape[0] // 2
-            feat_half1 = feat[sub == 1][:half_B1]
-            feat_cross = torch.cat((feat_half0, feat_half1), dim=0)
-            sf_sh_dist_vi = kl_soft_dist(feat_cross, feat_cross) #得到跨模态共享特征的距离分布
+            # half_B0 = feat[sub == 0].shape[0] // 2
+            # feat_half0 = feat[sub == 0][:half_B0]
+            # half_B1 = feat[sub == 1].shape[0] // 2
+            # feat_half1 = feat[sub == 1][:half_B1]
+            # feat_cross = torch.cat((feat_half0, feat_half1), dim=0)
+            # sf_sh_dist_vi = kl_soft_dist(feat_cross, feat_cross) #得到跨模态共享特征的距离分布
             _, kl_intra1 = Bg_kl(sf_sh_dist_v, sf_sh_dist_i)
-            _, kl_intra2 = Bg_kl(sf_sh_dist_v, sf_sh_dist_vi)
-            _, kl_intra3 = Bg_kl(sf_sh_dist_vi, sf_sh_dist_i)
-            kl_intra = kl_intra1 + kl_intra2 + kl_intra3
+            # _, kl_intra2 = Bg_kl(sf_sh_dist_v, sf_sh_dist_vi)
+            # _, kl_intra3 = Bg_kl(sf_sh_dist_vi, sf_sh_dist_i)
+            # kl_intra = kl_intra1 + kl_intra2 + kl_intra3
 
             # 如果当前批次是完整的（例如 120），使用正常的加权方式。
             if feat.size(0) == bb:
-                soft_dt = kl_intra
+                soft_dt = kl_intra1
             else:
                 soft_dt = kl_intra1 * 0.1
 
@@ -413,5 +414,12 @@ class Baseline(nn.Module):
             cls_loss = self.id_loss(logits.float(), labels) # 基础识别id的能力
             loss += cls_loss
             metric.update({'acc': calc_acc(logits.data, labels), 'id_loss': cls_loss.data})
+
+        cos_sim_sh = F.cosine_similarity(f_sh[sub == 0], f_sh[sub == 1]).mean()
+        cos_sim_sp = F.cosine_similarity(f_sp[sub == 0], f_sp[sub == 1]).mean()
+        decompose_loss = F.relu(-cos_sim_sh + cos_sim_sp + 0.1)
+        loss += decompose_loss * 0.5
+        metric.update({'cos_sim_sh': cos_sim_sh.data})
+        metric.update({'cos_sim_sp': cos_sim_sp.data})
 
         return loss, metric #对应engine代码下的返回损失和指标

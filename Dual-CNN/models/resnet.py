@@ -7,6 +7,8 @@ import torch
 import math
 from layers.module.CBAM import cbam
 from models.channel import AdaptiveGlobalModule, MUMModule
+from models.mada import PartSoftmaxAttention
+from models.ms3m import MS3M
 
 __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
            'resnet152', 'resnext50_32x4d', 'resnext101_32x8d']
@@ -401,7 +403,7 @@ def gem(x, p=3, eps=1e-6):
 
 
 class embed_net(nn.Module):
-    def __init__(self, drop_last_stride):
+    def __init__(self, drop_last_stride,  decompose=False):
         super(embed_net, self).__init__()
 
         self.shared_module_fr = Shared_module_fr(drop_last_stride=drop_last_stride)
@@ -416,7 +418,12 @@ class embed_net(nn.Module):
         self.V_bh = Special_module_bh(drop_last_stride=drop_last_stride)
         self.I_bh = Special_module_bh(drop_last_stride=drop_last_stride)
         self.mum = MUMModule(in_channels=1024)
+        self.mada = PartSoftmaxAttention(
+            in_channels=2048,
+            num_parts=6
+        )
 
+        self.ms3m = MS3M(in_channels=1024, reduction=16, scales=[3, 5, 7])
 
     def forward(self, x, sub ,labels):
         batch_size = x.size(0)
@@ -463,16 +470,19 @@ class embed_net(nn.Module):
         m_sh, m_sp, p_mod = self.mum(x_sh3)
         f_sh = x_sh3 * m_sh
         f_sp = x_sh3 * m_sp
+        f_sh, f_sp = self.ms3m(f_sh, f_sp)
         # x_sh3 = self.adp_global(x_sh3)  # 全局上下文
         if self.training:
             f_hallu, _ = cross_modality_hallucination(f_sh, f_sp, labels, sub)
             x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_hallu)
+            # x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_sh)
+            # x_sh4 = self.mada(x_sh4)
         else:
             x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_sh)
+            # x_sh4 = self.mada(x_sh4)
         # 池化得到最终共享特征
         sh_pl = gem(x_sh4).squeeze()
         sh_pl = sh_pl.view(sh_pl.size(0), -1)
-
 
         return sh_pl, alpha, f_sh, f_sp, p_mod
 
