@@ -470,15 +470,16 @@ class embed_net(nn.Module):
         m_sh, m_sp, p_mod = self.mum(x_sh3)
         f_sh = x_sh3 * m_sh
         f_sp = x_sh3 * m_sp
+        f_sh, f_sp = self.ms3m(f_sh, f_sp)
         # x_sh3 = self.adp_global(x_sh3)  # 全局上下文
         if self.training:
             f_hallu, _ = cross_modality_hallucination(f_sh, f_sp, labels, sub)
             x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_hallu)
             # x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_sh)
-            x_sh4 = self.mada(x_sh4)
+            # x_sh4 = self.mada(x_sh4)
         else:
             x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_sh)
-            x_sh4 = self.mada(x_sh4)
+            # x_sh4 = self.mada(x_sh4)
         # 池化得到最终共享特征
         sh_pl = gem(x_sh4).squeeze()
         sh_pl = sh_pl.view(sh_pl.size(0), -1)
