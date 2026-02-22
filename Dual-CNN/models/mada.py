@@ -48,11 +48,10 @@ class PartSoftmaxAttention(nn.Module):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
 
-    def forward(self, x, modality=None):
+    def forward(self, x):
         """
         Args:
             x        : [B, C, H, W]
-            modality : 保留接口兼容性，不使用
         Returns:
             out      : [B, C, H, W]
         """

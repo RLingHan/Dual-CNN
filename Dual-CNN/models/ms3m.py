@@ -139,5 +139,5 @@ class MS3M(nn.Module):
 
         f_sh_enhanced = self.gamma * x_out + f_sh  # 残差连接
 
-        return f_sh_enhanced, f_sp
+        return f_sh_enhanced, f_sp , self.gamma
 
