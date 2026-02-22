@@ -8,7 +8,7 @@ import math
 from layers.module.CBAM import cbam
 from models.channel import AdaptiveGlobalModule, MUMModule
 from models.mada import PartSoftmaxAttention
-# from models.ms3m import MS3M
+from models.ms3m import MS3M
 
 __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
            'resnet152', 'resnext50_32x4d', 'resnext101_32x8d']
@@ -419,7 +419,7 @@ class embed_net(nn.Module):
         self.I_bh = Special_module_bh(drop_last_stride=drop_last_stride)
         self.mum = MUMModule(in_channels=1024)
         self.mada = PartSoftmaxAttention(
-            in_channels=2048,
+            in_channels=1024,
             num_parts=6
         )
 
