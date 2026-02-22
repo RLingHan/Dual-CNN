@@ -453,9 +453,9 @@ class embed_net(nn.Module):
         # x_sh3, x_sh4 = self.shared_module_bh(x2)
         x_sh3 = self.shared_module_bh.model_sh_bh.layer3(x2)
         # x_sh3 = self.mada(x_sh3, sub)
-        # m_sh, m_sp, p_mod = self.mum(x_sh3)
-        # f_sh = x_sh3 * m_sh
-        # f_sp = x_sh3 * m_sp
+        m_sh, m_sp, p_mod = self.mum(x_sh3)
+        f_sh = x_sh3 * m_sh
+        f_sp = x_sh3 * m_sp
         # x_sh3 = self.adp_global(x_sh3)  # 全局上下文
         if self.training:
             # f_hallu, _ = cross_modality_hallucination(f_sh, f_sp, labels, sub)
@@ -469,8 +469,8 @@ class embed_net(nn.Module):
         sh_pl = gem(x_sh4).squeeze()
         sh_pl = sh_pl.view(sh_pl.size(0), -1)
 
-        # return sh_pl, alpha, f_sh, f_sp, p_mod
-        return sh_pl, alpha, None, None, None
+        return sh_pl, alpha, f_sh, f_sp, p_mod
+        # return sh_pl, alpha, None, None, None
 
 
 def _resnet(arch, block, layers, pretrained, progress, **kwargs):

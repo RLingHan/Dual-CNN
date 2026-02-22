@@ -325,11 +325,11 @@ class Baseline(nn.Module):
 
         metric.update({'alpha': alpha.data})
 
-        # t_sub = sub.long()
-        # sp_logits = self.special_D(f_sp) #F_sh
-        # sp_loss = self.id_loss(sp_logits.float(), t_sub) #鼓励判别器识别不出sh
-        # loss += sp_loss
-        # metric.update({'sp_loss': sp_loss.data})
+        t_sub = sub.long()
+        sp_logits = self.special_D(f_sp) #F_sh
+        sp_loss = self.id_loss(sp_logits.float(), t_sub) #鼓励判别器识别不出sh
+        loss += sp_loss
+        metric.update({'sp_loss': sp_loss.data})
 
         if self.triplet:
 
