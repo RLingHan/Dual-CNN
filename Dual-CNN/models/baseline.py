@@ -377,9 +377,9 @@ class Baseline(nn.Module):
 
         bb = 120  #90
 
-        # cpda_loss = CPDA(feat,sub,labels)
-        # loss += cpda_loss
-        # metric.update({'cpda_loss': cpda_loss.data})
+        cpda_loss = CPDA(feat,sub,labels)
+        loss += cpda_loss
+        metric.update({'cpda_loss': cpda_loss.data})
 
         if self.TGSA:
             sf_sh_dist_v = kl_soft_dist(feat[sub == 0], feat[sub == 0])
@@ -400,7 +400,7 @@ class Baseline(nn.Module):
             if feat.size(0) == bb:
                 soft_dt = kl_intra1
             else:
-                soft_dt = kl_intra1
+                soft_dt = kl_intra1 * 0.1
 
             loss += soft_dt
             metric.update({'soft_dt': soft_dt.data})
