@@ -11,10 +11,10 @@ k_size: 10
 dataset: regdb
 
 # loss
-bg_kl: true
-sm_kl: true
+bg_kl: false
+sm_kl: false
 decompose: false
-IP: true
+IP: false
 distalign: false
 classification: true
 center_cluster: false
@@ -23,7 +23,7 @@ fb_dt: false #true
 center: false
 
 # parameters
-margin: 1.2
+margin: 0.7
 
 num_parts: 6
 weight_sep: 0.5
