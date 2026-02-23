@@ -392,13 +392,14 @@ class embed_net(nn.Module):
         # x_sh3, x_sh4 = self.shared_module_bh(x2)
         # x_sh3 = self.shared_module_bh.model_sh_bh.layer3(x2)
 
-        # f_sh, f_sp = self.ms3m(f_sh, f_sp)
+
         # x_sh3 = self.adp_global(x_sh3)  # 全局上下文
         x = self.shared_module(x)
         x_sh3 = self.shared_module.model_sh.layer3(x)  # self.model_sh_fr  self.model_sh_bh
         m_sh, m_sp, p_mod = self.mum(x_sh3)
         f_sh = x_sh3 * m_sh
         f_sp = x_sh3 * m_sp
+        f_sh, f_sp = self.ms3m(f_sh, f_sp)
         x_sh4 = self.shared_module.model_sh.layer4(f_sh)  # self.model_sh_fr  self.model_sh_bh
             # x_sh4 = self.mada(x_sh4)
         # 池化得到最终共享特征
