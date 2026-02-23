@@ -117,7 +117,7 @@ def train(cfg):
     assert cfg.optimizer in ['adam', 'sgd']
     if cfg.optimizer == 'adam':
         #optimizer = optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.wd)
-        optimizer = optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.wd)
+        optimizer = optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.wd)
     else: # 配置优化器
         optimizer = optim.SGD(model.parameters(), lr=cfg.lr, momentum=0.9, weight_decay=cfg.wd)
 
