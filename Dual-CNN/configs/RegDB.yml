@@ -23,7 +23,7 @@ fb_dt: false #true
 center: false
 
 # parameters
-margin: 1.2
+margin: 0.7
 
 num_parts: 6
 weight_sep: 0.5
@@ -47,6 +47,7 @@ lr: 0.00035
 optimizer: adam
 num_epoch: 100
 lr_step: [50, 80]
+wd : 1e-2
 
 # augmentation
 random_flip: true
