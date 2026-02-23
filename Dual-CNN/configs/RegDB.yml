@@ -47,13 +47,12 @@ lr: 0.00035
 optimizer: adam
 num_epoch: 100
 lr_step: [50, 80]
-wd : 1e-2
 
 # augmentation
 random_flip: true
 random_crop: true
 random_erase: true
-color_jitter: false
+color_jitter: true
 padding: 10
 
 # log
