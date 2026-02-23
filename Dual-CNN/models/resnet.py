@@ -276,9 +276,7 @@ class Shared_baseline(nn.Module):
         x = self.model_sh.layer1(x)
         x = self.model_sh.layer2(x)
 
-        x_sh3 = self.model_sh.layer3(x)  # self.model_sh_fr  self.model_sh_bh
-        x_sh4 = self.model_sh.layer4(x_sh3)  # self.model_sh_fr  self.model_sh_bh
-        return x_sh4
+        return x
 
 
 class Shared_module_fr(nn.Module):
@@ -379,7 +377,7 @@ class embed_net(nn.Module):
         # self.adp_global = AdaptiveGlobalModule(1024)
         # self.V_bh = Special_module_bh(drop_last_stride=drop_last_stride)
         # self.I_bh = Special_module_bh(drop_last_stride=drop_last_stride)
-        # self.mum = MUMModule(in_channels=1024)
+        self.mum = MUMModule(in_channels=1024)
         # self.mada = PartSoftmaxAttention(
         #     in_channels=2048,
         #     num_parts=6
@@ -393,18 +391,21 @@ class embed_net(nn.Module):
 
         # x_sh3, x_sh4 = self.shared_module_bh(x2)
         # x_sh3 = self.shared_module_bh.model_sh_bh.layer3(x2)
-        # m_sh, m_sp, p_mod = self.mum(x_sh3)
-        # f_sh = x_sh3 * m_sh
-        # f_sp = x_sh3 * m_sp
+
         # f_sh, f_sp = self.ms3m(f_sh, f_sp)
         # x_sh3 = self.adp_global(x_sh3)  # 全局上下文
-        x_sh4 = self.shared_module(x)
+        x = self.shared_module(x)
+        x_sh3 = self.shared_module.model_sh.layer3(x)  # self.model_sh_fr  self.model_sh_bh
+        m_sh, m_sp, p_mod = self.mum(x_sh3)
+        f_sh = x_sh3 * m_sh
+        f_sp = x_sh3 * m_sp
+        x_sh4 = self.shared_module.model_sh.layer4(f_sh)  # self.model_sh_fr  self.model_sh_bh
             # x_sh4 = self.mada(x_sh4)
         # 池化得到最终共享特征
         sh_pl = gem(x_sh4).squeeze()
         sh_pl = sh_pl.view(sh_pl.size(0), -1)
 
-        return sh_pl
+        return sh_pl, f_sp
 
 
 def _resnet(arch, block, layers, pretrained, progress, **kwargs):

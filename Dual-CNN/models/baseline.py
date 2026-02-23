@@ -279,6 +279,7 @@ class Baseline(nn.Module):
 
         if self.classification:
             self.id_loss = nn.CrossEntropyLoss(label_smoothing=0.2,ignore_index=-1)
+            self.sp_loss = nn.CrossEntropyLoss(ignore_index=-1)
         if self.triplet:
             self.triplet_loss = TripletLoss(margin=self.margin)
             self.rerank_loss = RerankLoss(margin=0.7)
@@ -295,7 +296,7 @@ class Baseline(nn.Module):
         #epoch = kwargs.get('epoch')
         # CNN
         #layer4输出  layer4的语义特征  相互调节后的语义特征 mask前/后模态无关特征 mask前/后特别特征
-        sh_pl = self.backbone(inputs,sub=sub,labels=labels)
+        sh_pl, f_sp = self.backbone(inputs,sub=sub,labels=labels)
         #提取特征
 
         feats = sh_pl #layer4的语义输出
@@ -313,14 +314,21 @@ class Baseline(nn.Module):
                 return feats
 
         else:
-            return self.train_forward(feats, labels,sub, **kwargs)
+            return self.train_forward(feats, f_sp, labels,sub, **kwargs)
 
 
 
-    def train_forward(self, feat ,labels,sub, **kwargs):
+    def train_forward(self, feat , f_sp, labels,sub, **kwargs):
         epoch = kwargs.get('epoch')
         metric = {}
         loss = 0
+
+        t_sub = sub.long()
+
+        sp_logits = self.special_D(f_sp) #F_sh
+        sp_c_loss = self.sp_loss(sp_logits.float(), t_sub)
+        loss += sp_c_loss
+        metric.update({'sp_c_loss': sp_c_loss.data})
 
         if self.triplet:
 
