@@ -383,7 +383,7 @@ class embed_net(nn.Module):
         #     num_parts=6
         # )
 
-        # self.ms3m = MS3M(in_channels=1024, reduction=16, scales=[3, 5, 7])
+        self.ms3m = MS3M(in_channels=1024, reduction=16, scales=[3, 5, 7])
 
     def forward(self, x, sub ,labels):
         batch_size = x.size(0)
