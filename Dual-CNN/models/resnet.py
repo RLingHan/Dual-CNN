@@ -262,7 +262,7 @@ class ResNet(nn.Module):
 
 class Shared_baseline(nn.Module):
     def __init__(self, drop_last_stride):
-        super(Shared_module_fr, self).__init__()
+        super(Shared_baseline, self).__init__()
 
         model_sh = resnet50(pretrained=True, drop_last_stride=drop_last_stride)
         # avg pooling to global pooling
