@@ -267,6 +267,7 @@ class Shared_baseline(nn.Module):
         model_sh = resnet50(pretrained=True, drop_last_stride=drop_last_stride)
         # avg pooling to global pooling
         self.model_sh = model_sh
+        self.cbam_sh = cbam(1024)
 
     def forward(self, x):
         x = self.model_sh.conv1(x)
@@ -277,6 +278,7 @@ class Shared_baseline(nn.Module):
         x = self.model_sh.layer2(x)
 
         x_sh3 = self.model_sh.layer3(x)  # self.model_sh_fr  self.model_sh_bh
+        x_sh3 = self.cbam_sh(x_sh3)
         x_sh4 = self.model_sh.layer4(x_sh3)  # self.model_sh_fr  self.model_sh_bh
         return x_sh4
 
