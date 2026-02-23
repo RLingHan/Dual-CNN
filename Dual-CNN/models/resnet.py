@@ -260,6 +260,26 @@ class ResNet(nn.Module):
 
         return x
 
+class Shared_baseline(nn.Module):
+    def __init__(self, drop_last_stride):
+        super(Shared_module_fr, self).__init__()
+
+        model_sh = resnet50(pretrained=True, drop_last_stride=drop_last_stride)
+        # avg pooling to global pooling
+        self.model_sh = model_sh
+
+    def forward(self, x):
+        x = self.model_sh.conv1(x)
+        x = self.model_sh.bn1(x)
+        x = self.model_sh.relu(x)
+        x = self.model_sh.maxpool(x)
+        x = self.model_sh.layer1(x)
+        x = self.model_sh.layer2(x)
+
+        x_sh3 = self.model_sh.layer3(x)  # self.model_sh_fr  self.model_sh_bh
+        x_sh4 = self.model_sh.layer4(x_sh3)  # self.model_sh_fr  self.model_sh_bh
+        return x_sh4
+
 
 class Shared_module_fr(nn.Module):
     def __init__(self, drop_last_stride, modality_attention=0):
@@ -277,6 +297,7 @@ class Shared_module_fr(nn.Module):
         x = self.model_sh_fr.maxpool(x)
         x = self.model_sh_fr.layer1(x)
         x = self.model_sh_fr.layer2(x)
+
         return x
 
 class Shared_module_bh(nn.Module):
@@ -352,9 +373,9 @@ class embed_net(nn.Module):
     def __init__(self, drop_last_stride,  decompose=False):
         super(embed_net, self).__init__()
 
-        self.shared_module_fr = Shared_module_fr(drop_last_stride=drop_last_stride)
-        self.shared_module_bh = Shared_module_bh(drop_last_stride=drop_last_stride)
-
+        # self.shared_module_fr = Shared_module_fr(drop_last_stride=drop_last_stride)
+        # self.shared_module_bh = Shared_module_bh(drop_last_stride=drop_last_stride)
+        self.shared_module = Shared_baseline(drop_last_stride=drop_last_stride)
         # self.adp_global = AdaptiveGlobalModule(1024)
         # self.V_bh = Special_module_bh(drop_last_stride=drop_last_stride)
         # self.I_bh = Special_module_bh(drop_last_stride=drop_last_stride)
@@ -368,16 +389,16 @@ class embed_net(nn.Module):
 
     def forward(self, x, sub ,labels):
         batch_size = x.size(0)
-        x2 = self.shared_module_fr(x)  # (B, 512, H, W)
+        # x2 = self.shared_module_fr(x)  # (B, 512, H, W)
 
         # x_sh3, x_sh4 = self.shared_module_bh(x2)
-        x_sh3 = self.shared_module_bh.model_sh_bh.layer3(x2)
+        # x_sh3 = self.shared_module_bh.model_sh_bh.layer3(x2)
         # m_sh, m_sp, p_mod = self.mum(x_sh3)
         # f_sh = x_sh3 * m_sh
         # f_sp = x_sh3 * m_sp
         # f_sh, f_sp = self.ms3m(f_sh, f_sp)
         # x_sh3 = self.adp_global(x_sh3)  # 全局上下文
-        x_sh4 = self.shared_module_bh.model_sh_bh.layer4(x_sh3)
+        x_sh4 = self.shared_module(x)
             # x_sh4 = self.mada(x_sh4)
         # 池化得到最终共享特征
         sh_pl = gem(x_sh4).squeeze()
