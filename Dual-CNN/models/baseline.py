@@ -363,10 +363,6 @@ class Baseline(nn.Module):
         if f_sh_i.dim() == 1:
             f_sh_i = f_sh_i.unsqueeze(0)
 
-        mmd = mmd_loss(f_sh_v, f_sh_i)
-        loss += mmd * 0.3
-        metric.update({'mmd': mmd.data})
-
         align_loss = self.modal_align(f_sh_v, f_sh_i,
                                  labels[sub == 0], labels[sub == 1])
         loss += align_loss * 0.5
