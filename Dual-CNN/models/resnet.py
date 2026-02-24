@@ -399,7 +399,7 @@ class embed_net(nn.Module):
         m_sh, m_sp, p_mod = self.mum(x_sh3)
         f_sh = x_sh3 * m_sh
         f_sp = x_sh3 * m_sp
-        f_sh, f_sp = self.ms3m(f_sh, f_sp)
+        # f_sh, f_sp = self.ms3m(f_sh, f_sp)
         x_sh4 = self.shared_module.model_sh.layer4(f_sh)  # self.model_sh_fr  self.model_sh_bh
             # x_sh4 = self.mada(x_sh4)
         # 池化得到最终共享特征
