@@ -276,25 +276,9 @@ class Baseline(nn.Module):
 
         self.classifier = nn.Linear(self.base_dim, num_classes, bias=False)
 
-        # 局部分类器：每个 part 一个独立分类器
-        # 用 bn_neck 风格的 BN + Linear
-        self.local_bn_necks = nn.ModuleList([
-            nn.BatchNorm1d(self.base_dim) for _ in range(self.num_parts)
-        ])
-        for bn in self.local_bn_necks:
-            nn.init.constant_(bn.bias, 0)
-            bn.bias.requires_grad_(False)
-
-        self.local_classifiers = nn.ModuleList([
-            nn.Linear(self.base_dim, num_classes, bias=False)
-            for _ in range(self.num_parts)
-        ])
-
-
         if self.classification:
             self.id_loss = nn.CrossEntropyLoss(label_smoothing=0.2,ignore_index=-1)
             self.sp_loss = nn.CrossEntropyLoss(ignore_index=-1)
-            self.kl_loss = nn.KLDivLoss(reduction='batchmean')
         if self.triplet:
             self.triplet_loss = TripletLoss(margin=self.margin)
             self.rerank_loss = RerankLoss(margin=0.7)
