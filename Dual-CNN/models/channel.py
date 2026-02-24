@@ -6,40 +6,32 @@ import torch.nn.functional as F
 class MUMModule(nn.Module):
     def __init__(self, in_channels=1024):
         super(MUMModule, self).__init__()
-
-        # 通道注意力（原有）
-        self.channel_attn = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(),
-            nn.Linear(in_channels, in_channels // 16),
+        self.discriminator = nn.Sequential(
+            nn.Linear(in_channels, in_channels // 2),
+            nn.BatchNorm1d(in_channels // 2),
             nn.ReLU(inplace=True),
-            nn.Linear(in_channels // 16, in_channels),
+            nn.Linear(in_channels // 2, in_channels),
         )
+        # 新增：模态分类头，直接用模态标签监督P
+        self.modal_head = nn.Linear(in_channels, 2)
 
-        # 空间注意力（新增）：判断哪些位置是模态相关的
-        self.spatial_attn = nn.Sequential(
-            nn.Conv2d(in_channels, 1, kernel_size=1, bias=False),
-            nn.BatchNorm2d(1),
-        )
-
-    def forward(self, x):
+    def forward(self, x, sub=None):
         b, c, h, w = x.shape
-
-        # 通道维度的模态概率
-        P_logits = self.channel_attn(x)  # [B, C]
+        feat_gap = F.avg_pool2d(x, (h, w)).view(b, c)
+        P_logits = self.discriminator(feat_gap)
         P = torch.sigmoid(P_logits)
 
-        mask_sh_c = (1 - torch.abs(2 * P - 1)).view(b, c, 1, 1)
-        mask_sp_c = torch.abs(2 * P - 1).view(b, c, 1, 1)
+        mask_sh = 1 - torch.abs(2 * P - 1)
+        mask_sp = torch.abs(2 * P - 1)
 
-        # 空间维度的模态权重
-        sp_map = torch.sigmoid(self.spatial_attn(x))  # [B, 1, H, W]
+        mask_sh = mask_sh.view(b, c, 1, 1)
+        mask_sp = mask_sp.view(b, c, 1, 1)
 
-        # 联合 mask：通道 × 空间
-        mask_sh = mask_sh_c * (1 - sp_map)  # 模态无关：通道无关 且 空间无关
-        mask_sp = mask_sp_c * sp_map  # 模态特有：通道相关 且 空间相关
+        # 用f_sp的GAP预测模态
+        f_sp_gap = (x * mask_sp).mean(dim=[2, 3])  # [B, C]
+        modal_logits = self.modal_head(f_sp_gap)  # ✅ 语义正确
 
-        return mask_sh, mask_sp, P_logits
+        return mask_sh, mask_sp, modal_logits
 
 class FeatureDecomposition(nn.Module):
     """将特征分解为模态共享和模态特定"""

@@ -210,29 +210,56 @@ def modal_centroid_loss(F1, F2, labels, modalities, margin):
 
 
 class ModalityAlignmentLoss(nn.Module):
-    def __init__(self, temperature=0.07):
+    def __init__(self, feat_dim=1024, proj_dim=256, temperature=0.07):
         super().__init__()
+        # 投影头，降维后再对齐
+        self.proj = nn.Sequential(
+            nn.Linear(feat_dim, proj_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(proj_dim, proj_dim)
+        )
         self.temp = temperature
 
     def forward(self, v_feat, i_feat, v_labels, i_labels):
-        # 此时 v_feat 和 v_labels 都是 N=30
-        v_feat = F.normalize(v_feat, dim=1)
-        i_feat = F.normalize(i_feat, dim=1)
+        # 先投影到低维
+        v_feat = F.normalize(self.proj(v_feat), dim=1)  # [N, 256]
+        i_feat = F.normalize(self.proj(i_feat), dim=1)
 
-        # sim 形状为 (30, 30)
         sim = torch.mm(v_feat, i_feat.t()) / self.temp
-
-        # v_labels.unsqueeze(1) -> (30, 1)
-        # i_labels.unsqueeze(0) -> (1, 30)
         labels_eq = v_labels.unsqueeze(1) == i_labels.unsqueeze(0)
 
         exp_sim = torch.exp(sim)
         pos_sum = (exp_sim * labels_eq.float()).sum(1)
         all_sum = exp_sim.sum(1)
-
-        # 增加 1e-8 防止 log(0)
         loss = -torch.log(pos_sum / (all_sum + 1e-8)).mean()
         return loss
+
+
+def mmd_loss(f_v, f_i, kernel='rbf'):
+    """
+    最大均值差异，让两个模态的特征分布接近
+    f_v: [N, C]  可见光特征
+    f_i: [N, C]  红外特征
+    不需要标签，不需要配对
+    """
+
+    def rbf_kernel(x, y, gamma=1.0):
+        # ||x-y||^2
+        xx = (x ** 2).sum(1, keepdim=True)
+        yy = (y ** 2).sum(1, keepdim=True)
+        dist = xx + yy.t() - 2 * torch.mm(x, y.t())
+        return torch.exp(-gamma * dist)
+
+    # 先做L2归一化，缓解高维问题
+    f_v = F.normalize(f_v, dim=1)
+    f_i = F.normalize(f_i, dim=1)
+
+    K_vv = rbf_kernel(f_v, f_v)
+    K_ii = rbf_kernel(f_i, f_i)
+    K_vi = rbf_kernel(f_v, f_i)
+
+    loss = K_vv.mean() + K_ii.mean() - 2 * K_vi.mean()
+    return loss
 
 
 class Baseline(nn.Module):
@@ -243,6 +270,8 @@ class Baseline(nn.Module):
         self.backbone = embed_net(drop_last_stride=drop_last_stride)
 
         self.base_dim = 2048
+        self.modal_align = ModalityAlignmentLoss(feat_dim=1024, proj_dim=256)
+
 
         print("output feat length:{}".format(self.base_dim))
         self.bn_neck = nn.BatchNorm1d(self.base_dim)
@@ -295,7 +324,7 @@ class Baseline(nn.Module):
         #epoch = kwargs.get('epoch')
         # CNN
         #layer4输出  layer4的语义特征  相互调节后的语义特征 mask前/后模态无关特征 mask前/后特别特征
-        sh_pl, f_sp = self.backbone(inputs,sub=sub,labels=labels)
+        sh_pl, f_sh, f_sp , m_logits = self.backbone(inputs,sub=sub,labels=labels)
         #提取特征
 
         feats = sh_pl #layer4的语义输出
@@ -313,14 +342,35 @@ class Baseline(nn.Module):
                 return feats
 
         else:
-            return self.train_forward(feats, f_sp, labels,sub, **kwargs)
+            return self.train_forward(feats, f_sh, f_sp, m_logits,labels,sub, **kwargs)
 
 
 
-    def train_forward(self, feat , f_sp, labels,sub, **kwargs):
+    def train_forward(self, feat ,f_sh, f_sp,m_logits, labels,sub, **kwargs):
         epoch = kwargs.get('epoch')
         metric = {}
         loss = 0
+
+        modal_loss = F.cross_entropy(m_logits, sub.long())
+        loss += modal_loss * 0.5
+        metric.update({'modal': modal_loss.data})
+
+        f_sh_v = gem(f_sh[sub == 0]).squeeze()  # 可见光
+        f_sh_i = gem(f_sh[sub == 1]).squeeze()  # 红外
+        # 保证至少是2D
+        if f_sh_v.dim() == 1:
+            f_sh_v = f_sh_v.unsqueeze(0)
+        if f_sh_i.dim() == 1:
+            f_sh_i = f_sh_i.unsqueeze(0)
+
+        mmd = mmd_loss(f_sh_v, f_sh_i)
+        loss += mmd * 0.3
+        metric.update({'mmd': mmd.data})
+
+        align_loss = self.modal_align(f_sh_v, f_sh_i,
+                                 labels[sub == 0], labels[sub == 1])
+        loss += align_loss * 0.5
+        metric.update({'align': align_loss.data})
 
         t_sub = sub.long()
 
@@ -385,19 +435,17 @@ class Baseline(nn.Module):
 
         feat = self.bn_neck(feat)
 
-        # sub_nb = sub + 0  ##模态标签
-        #
-        # pseu_sh_logits = self.D_shared_pseu(feat) #F_sh
-        # p_sub = sub_nb.chunk(2)[0].repeat_interleave(2) #构造标签
-        # pp_sub = torch.roll(p_sub, -1) #反转标签
-        # pseu_loss = self.id_loss(pseu_sh_logits.float(), pp_sub) #鼓励判别器识别不出sh
-        # loss += pseu_loss
-        # metric.update({'pseudo_loss': pseu_loss.data})
+        sub_nb = sub + 0  ##模态标签
+
+        pseu_sh_logits = self.D_shared_pseu(feat) #F_sh
+        p_sub = sub_nb.chunk(2)[0].repeat_interleave(2) #构造标签
+        pp_sub = torch.roll(p_sub, -1) #反转标签
+        pseu_loss = self.id_loss(pseu_sh_logits.float(), pp_sub) #鼓励判别器识别不出sh
+        loss += pseu_loss
+        metric.update({'pseudo_loss': pseu_loss.data})
 
         if self.classification:
             logits = self.classifier(feat)
-
-
             if self.CSA1:
                 _, intra_bg = Bg_kl(logits[sub == 0], logits[sub == 1])  # 共享和红外对齐
                 bg_loss = intra_bg
