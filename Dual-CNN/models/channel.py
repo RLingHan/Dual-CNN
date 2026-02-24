@@ -6,32 +6,40 @@ import torch.nn.functional as F
 class MUMModule(nn.Module):
     def __init__(self, in_channels=1024):
         super(MUMModule, self).__init__()
+        # 通道级判别器：输入 GAP 后的特征 [B, C]
         self.discriminator = nn.Sequential(
             nn.Linear(in_channels, in_channels // 2),
             nn.BatchNorm1d(in_channels // 2),
             nn.ReLU(inplace=True),
             nn.Linear(in_channels // 2, in_channels),
+            # nn.Sigmoid()  # 输出 P_c: 每个通道属于 RGB 的概率
         )
-        # 新增：模态分类头，直接用模态标签监督P
-        self.modal_head = nn.Linear(in_channels, 2)
 
-    def forward(self, x, sub=None):
+    def forward(self, x):
+        # x shape: [B, C, H, W]
         b, c, h, w = x.shape
-        feat_gap = F.avg_pool2d(x, (h, w)).view(b, c)
-        P_logits = self.discriminator(feat_gap)
-        P = torch.sigmoid(P_logits)
 
+        # 1. 全局平均池化得到通道描述符
+        feat_gap = F.avg_pool2d(x, (h, w)).view(b, c)
+
+        # 2. 预测模态概率 P
+        P_logits = self.discriminator(feat_gap)  # [B, C] 未经Sigmoid
+
+        # 生成mask时才用Sigmoid
+        P = torch.sigmoid(P_logits)  # [B, C] ∈ [0,1]
+
+        # 3. 生成软掩码 (Soft Mask)
+        # Shared Mask: 采用三角波函数，在 0.5 处取得极大值 1
         mask_sh = 1 - torch.abs(2 * P - 1)
+
+        # Specific Mask: 在 0 或 1 处取得极大值 1
         mask_sp = torch.abs(2 * P - 1)
 
+        # 4. 调整维度以便与特征图相乘 [B, C, 1, 1]
         mask_sh = mask_sh.view(b, c, 1, 1)
         mask_sp = mask_sp.view(b, c, 1, 1)
 
-        # 用f_sp的GAP预测模态
-        f_sp_gap = (x * mask_sp).mean(dim=[2, 3])  # [B, C]
-        modal_logits = self.modal_head(f_sp_gap)  # ✅ 语义正确
-
-        return mask_sh, mask_sp, modal_logits
+        return mask_sh, mask_sp, P_logits
 
 class FeatureDecomposition(nn.Module):
     """将特征分解为模态共享和模态特定"""
