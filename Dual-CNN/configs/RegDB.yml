@@ -11,8 +11,8 @@ k_size: 10
 dataset: regdb
 
 # loss
-bg_kl: false
-sm_kl: false
+bg_kl: true
+sm_kl: true
 decompose: false
 IP: false
 distalign: false
