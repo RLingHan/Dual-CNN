@@ -406,7 +406,20 @@ class embed_net(nn.Module):
         sh_pl = gem(x_sh4).squeeze()
         sh_pl = sh_pl.view(sh_pl.size(0), -1)
 
-        return sh_pl, f_sp
+        self.num_parts = 4
+
+        H = x_sh4.size(2)
+        part_h = H // self.num_parts
+        local_feats = []
+        for i in range(self.num_parts):
+            # 切出第 i 块
+            part = x_sh4[:, :, i * part_h:(i + 1) * part_h, :]  # [B, 2048, H/4, W]
+            # GAP 池化
+            part_feat = F.avg_pool2d(part, (part.size(2), part.size(3)))  # [B, 2048, 1, 1]
+            part_feat = part_feat.view(part_feat.size(0), -1)  # [B, 2048]
+            local_feats.append(part_feat)
+
+        return sh_pl, f_sp , local_feats
 
 
 def _resnet(arch, block, layers, pretrained, progress, **kwargs):
