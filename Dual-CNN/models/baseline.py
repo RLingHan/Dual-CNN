@@ -284,8 +284,8 @@ class Baseline(nn.Module):
             self.arcface = ArcFaceLoss(
                 in_features=self.base_dim,
                 num_classes=num_classes,
-                s=64.0,
-                m=0.35,  # VI-ReID 建议从 0.3~0.35 开始，比人脸略小
+                s=32.0,
+                m=0.2,  # VI-ReID 建议从 0.3~0.35 开始，比人脸略小
                 label_smoothing=0.1
             )
         if self.triplet:
