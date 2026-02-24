@@ -19,6 +19,7 @@ from layers.loss.circle_loss import CircleLoss
 # from layers import cbam
 # from layers import NonLocalBlockND
 from utils.rerank import re_ranking, pairwise_distance
+from layers.loss.arcface_loss import ArcFaceLoss
 
 
 def intersect1d(tensor1, tensor2):
@@ -280,6 +281,13 @@ class Baseline(nn.Module):
         if self.classification:
             self.id_loss = nn.CrossEntropyLoss(label_smoothing=0.2,ignore_index=-1)
             self.sp_loss = nn.CrossEntropyLoss(ignore_index=-1)
+            self.arcface = ArcFaceLoss(
+                in_features=self.base_dim,
+                num_classes=num_classes,
+                s=64.0,
+                m=0.35,  # VI-ReID 建议从 0.3~0.35 开始，比人脸略小
+                label_smoothing=0.1
+            )
         if self.triplet:
             self.triplet_loss = TripletLoss(margin=self.margin)
             self.rerank_loss = RerankLoss(margin=0.7)
@@ -397,6 +405,8 @@ class Baseline(nn.Module):
 
         if self.classification:
             logits = self.classifier(feat)
+            arc_loss, arc_logits = self.arcface(feat.float(), labels)
+
             if self.CSA1:
                 _, intra_bg = Bg_kl(logits[sub == 0], logits[sub == 1])  # 共享和红外对齐
                 bg_loss = intra_bg
@@ -412,6 +422,9 @@ class Baseline(nn.Module):
             cls_loss = self.id_loss(logits.float(), labels) # 基础识别id的能力
             loss += cls_loss
             metric.update({'acc': calc_acc(logits.data, labels), 'id_loss': cls_loss.data})
+
+            loss += arc_loss
+            metric.update({'arc_acc': calc_acc(arc_logits.data, labels), 'arc_loss': arc_loss.data})
 
 
         return loss, metric #对应engine代码下的返回损失和指标
