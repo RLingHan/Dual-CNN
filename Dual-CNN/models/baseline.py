@@ -243,7 +243,6 @@ class Baseline(nn.Module):
         self.backbone = embed_net(drop_last_stride=drop_last_stride)
 
         self.base_dim = 2048
-        self.num_parts = 4
 
         print("output feat length:{}".format(self.base_dim))
         self.bn_neck = nn.BatchNorm1d(self.base_dim)
@@ -312,7 +311,7 @@ class Baseline(nn.Module):
         #epoch = kwargs.get('epoch')
         # CNN
         #layer4输出  layer4的语义特征  相互调节后的语义特征 mask前/后模态无关特征 mask前/后特别特征
-        sh_pl, f_sp , local_feats = self.backbone(inputs,sub=sub,labels=labels)
+        sh_pl, f_sp = self.backbone(inputs,sub=sub,labels=labels)
         #提取特征
 
         feats = sh_pl #layer4的语义输出
@@ -330,11 +329,11 @@ class Baseline(nn.Module):
                 return feats
 
         else:
-            return self.train_forward(feats, f_sp, local_feats, labels,sub, **kwargs)
+            return self.train_forward(feats, f_sp, labels,sub, **kwargs)
 
 
 
-    def train_forward(self, feat , f_sp, local_feats, labels,sub, **kwargs):
+    def train_forward(self, feat , f_sp, labels,sub, **kwargs):
         epoch = kwargs.get('epoch')
         metric = {}
         loss = 0
@@ -431,39 +430,5 @@ class Baseline(nn.Module):
             loss += cls_loss
             metric.update({'acc': calc_acc(logits.data, labels), 'id_loss': cls_loss.data})
 
-            # ── 局部分支 loss ──
-            local_cls_loss_total = 0.0
-            local_kl_loss_total = 0.0
-
-            # 全局 logits 作为 KL 的 teacher，detach 避免梯度回流到全局分支
-            global_prob = F.softmax(logits.detach(), dim=1)
-
-            for i in range(self.num_parts):
-                # BN + 分类
-                part_feat = self.local_bn_necks[i](local_feats[i])
-                part_logits = self.local_classifiers[i](part_feat)
-
-                # 局部分类 loss
-                part_cls_loss = self.id_loss(part_logits.float(), labels)
-                local_cls_loss_total += part_cls_loss
-
-                # 局部 → 全局 单向 KL（局部向全局对齐）
-                part_kl_loss = self.kl_loss(
-                    F.log_softmax(part_logits.float(), dim=1),  # 学生 log概率
-                    global_prob                                   # 老师 概率
-                )
-                local_kl_loss_total += part_kl_loss
-
-            # 平均后加权
-            local_cls_loss = local_cls_loss_total / self.num_parts
-            local_kl_loss = local_kl_loss_total / self.num_parts
-
-            loss += 0.25 * local_cls_loss   # 局部分类权重
-            loss += 0.1 * local_kl_loss     # KL对齐权重
-
-            metric.update({
-                'loc_cls': local_cls_loss.data,
-                'loc_kl':  local_kl_loss.data
-            })
 
         return loss, metric #对应engine代码下的返回损失和指标

@@ -6,38 +6,38 @@ import torch.nn.functional as F
 class MUMModule(nn.Module):
     def __init__(self, in_channels=1024):
         super(MUMModule, self).__init__()
-        # 通道级判别器：输入 GAP 后的特征 [B, C]
-        self.discriminator = nn.Sequential(
-            nn.Linear(in_channels, in_channels // 2),
-            nn.BatchNorm1d(in_channels // 2),
+
+        # 通道注意力（原有）
+        self.channel_attn = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(in_channels, in_channels // 16),
             nn.ReLU(inplace=True),
-            nn.Linear(in_channels // 2, in_channels),
-            # nn.Sigmoid()  # 输出 P_c: 每个通道属于 RGB 的概率
+            nn.Linear(in_channels // 16, in_channels),
+        )
+
+        # 空间注意力（新增）：判断哪些位置是模态相关的
+        self.spatial_attn = nn.Sequential(
+            nn.Conv2d(in_channels, 1, kernel_size=1, bias=False),
+            nn.BatchNorm2d(1),
         )
 
     def forward(self, x):
-        # x shape: [B, C, H, W]
         b, c, h, w = x.shape
 
-        # 1. 全局平均池化得到通道描述符
-        feat_gap = F.avg_pool2d(x, (h, w)).view(b, c)
+        # 通道维度的模态概率
+        P_logits = self.channel_attn(x)  # [B, C]
+        P = torch.sigmoid(P_logits)
 
-        # 2. 预测模态概率 P
-        P_logits = self.discriminator(feat_gap)  # [B, C] 未经Sigmoid
+        mask_sh_c = (1 - torch.abs(2 * P - 1)).view(b, c, 1, 1)
+        mask_sp_c = torch.abs(2 * P - 1).view(b, c, 1, 1)
 
-        # 生成mask时才用Sigmoid
-        P = torch.sigmoid(P_logits)  # [B, C] ∈ [0,1]
+        # 空间维度的模态权重
+        sp_map = torch.sigmoid(self.spatial_attn(x))  # [B, 1, H, W]
 
-        # 3. 生成软掩码 (Soft Mask)
-        # Shared Mask: 采用三角波函数，在 0.5 处取得极大值 1
-        mask_sh = 1 - torch.abs(2 * P - 1)
-
-        # Specific Mask: 在 0 或 1 处取得极大值 1
-        mask_sp = torch.abs(2 * P - 1)
-
-        # 4. 调整维度以便与特征图相乘 [B, C, 1, 1]
-        mask_sh = mask_sh.view(b, c, 1, 1)
-        mask_sp = mask_sp.view(b, c, 1, 1)
+        # 联合 mask：通道 × 空间
+        mask_sh = mask_sh_c * (1 - sp_map)  # 模态无关：通道无关 且 空间无关
+        mask_sp = mask_sp_c * sp_map  # 模态特有：通道相关 且 空间相关
 
         return mask_sh, mask_sp, P_logits
 
