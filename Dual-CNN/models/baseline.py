@@ -405,7 +405,7 @@ class Baseline(nn.Module):
 
         if self.classification:
             logits = self.classifier(feat)
-            arc_loss, arc_logits = self.arcface(feat.float(), labels)
+
 
             if self.CSA1:
                 _, intra_bg = Bg_kl(logits[sub == 0], logits[sub == 1])  # 共享和红外对齐
@@ -423,8 +423,11 @@ class Baseline(nn.Module):
             loss += cls_loss
             metric.update({'acc': calc_acc(logits.data, labels), 'id_loss': cls_loss.data})
 
-            loss += arc_loss
-            metric.update({'arc_acc': calc_acc(arc_logits.data, labels), 'arc_loss': arc_loss.data})
+            if epoch > 20:
+                arc_loss, arc_logits = self.arcface(feat.float(), labels)
+                arc_loss = arc_loss * 0.2
+                loss += arc_loss
+                metric.update({'arc_acc': calc_acc(arc_logits.data, labels), 'arc_loss': arc_loss.data})
 
 
         return loss, metric #对应engine代码下的返回损失和指标
