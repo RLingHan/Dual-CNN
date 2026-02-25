@@ -15,11 +15,9 @@ from layers.loss.rerank_loss import  RerankLoss
 from layers.loss.triplet_loss import TripletLoss
 from layers.loss.local_center_loss import CenterTripletLoss
 from layers.loss.center_loss import CenterLoss
-from layers.loss.circle_loss import CircleLoss
 # from layers import cbam
 # from layers import NonLocalBlockND
 from utils.rerank import re_ranking, pairwise_distance
-
 
 def intersect1d(tensor1, tensor2):
     #找出 tensor1 和 tensor2 中的共有元素
@@ -240,17 +238,21 @@ class Baseline(nn.Module):
         super(Baseline, self).__init__()
 
         self.drop_last_stride = drop_last_stride
-        self.backbone = embed_net(drop_last_stride=drop_last_stride)
+        self.decompose = decompose
+        self.backbone = embed_net(drop_last_stride=drop_last_stride, decompose=decompose)
 
         self.base_dim = 2048
+        self.dim = 0
+        self.part_num = kwargs.get('num_parts', 0)
 
-        print("output feat length:{}".format(self.base_dim))
-        self.bn_neck = nn.BatchNorm1d(self.base_dim)
+
+        print("output feat length:{}".format(self.base_dim + self.dim * self.part_num))
+        self.bn_neck = nn.BatchNorm1d(self.base_dim + self.dim * self.part_num)
         nn.init.constant_(self.bn_neck.bias, 0)
         self.bn_neck.bias.requires_grad_(False)
-        # self.bn_neck_sp = nn.BatchNorm1d(self.base_dim + self.dim * self.part_num)
-        # nn.init.constant_(self.bn_neck_sp.bias, 0)
-        # self.bn_neck_sp.bias.requires_grad_(False)
+        self.bn_neck_sp = nn.BatchNorm1d(self.base_dim + self.dim * self.part_num)
+        nn.init.constant_(self.bn_neck_sp.bias, 0)
+        self.bn_neck_sp.bias.requires_grad_(False)
 
         if kwargs.get('eval', False):
             return
@@ -260,6 +262,9 @@ class Baseline(nn.Module):
         self.center_cluster = kwargs.get('center_cluster', False)
         self.center_loss = kwargs.get('center', False)
         self.margin = kwargs.get('margin', 0.3)
+
+        self.modality_align_loss = ModalityAlignmentLoss()
+        self.align = False
 
         # 消融实验
         self.CSA1 = kwargs.get('bg_kl', False)
@@ -274,11 +279,16 @@ class Baseline(nn.Module):
         self.D_shared_pseu = Discrimination()  # 伪模态分类器（共享特征分支）
         self.special_D = convDiscrimination(1024)
 
-        self.classifier = nn.Linear(self.base_dim, num_classes, bias=False)
+        if self.decompose:
+            self.classifier = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False) # 主分类器（共享特征）
+            self.classifier_sp = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False) # 特有模态分类器
+            self.D_special = Discrimination() # 判别当前特征来自哪种模态
+            self.C_sp_f = nn.Linear(self.base_dim, num_classes, bias=False) # 用于熵边界约束
 
+        else:
+            self.classifier = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False)
         if self.classification:
-            self.id_loss = nn.CrossEntropyLoss(label_smoothing=0.2,ignore_index=-1)
-            self.sp_loss = nn.CrossEntropyLoss(ignore_index=-1)
+            self.id_loss = nn.CrossEntropyLoss(ignore_index=-1)
         if self.triplet:
             self.triplet_loss = TripletLoss(margin=self.margin)
             self.rerank_loss = RerankLoss(margin=0.7)
@@ -288,26 +298,6 @@ class Baseline(nn.Module):
         if self.center_loss:
             self.center_loss = CenterLoss(num_classes, self.base_dim + self.dim * self.part_num)
 
-        if False:
-            self.dim = 0
-            self.part_num = 0
-            self.visible_classifier = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False)
-            self.infrared_classifier = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False)
-
-            self.visible_classifier_ = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False)
-            self.visible_classifier_.weight.requires_grad_(False)
-            self.visible_classifier_.weight.data = self.visible_classifier.weight.data
-
-            self.infrared_classifier_ = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False)
-            self.infrared_classifier_.weight.requires_grad_(False)
-            self.infrared_classifier_.weight.data = self.infrared_classifier.weight.data
-
-            self.KLDivLoss = nn.KLDivLoss(reduction='batchmean')
-            self.weight_sid = kwargs.get('weight_sid', 0.5)
-            self.weight_KL = kwargs.get('weight_KL', 2.5)
-            self.update_rate = kwargs.get('update_rate', 0.2)
-            self.update_rate_ = self.update_rate
-
     def forward(self, inputs, labels=None, **kwargs):
 
         cam_ids = kwargs.get('cam_ids')
@@ -315,7 +305,7 @@ class Baseline(nn.Module):
         #epoch = kwargs.get('epoch')
         # CNN
         #layer4输出  layer4的语义特征  相互调节后的语义特征 mask前/后模态无关特征 mask前/后特别特征
-        sh_pl, f_sp = self.backbone(inputs,sub=sub,labels=labels)
+        sh_pl, alpha, f_sh, f_sp, sp_pl = self.backbone(inputs,sub=sub,labels=labels)
         #提取特征
 
         feats = sh_pl #layer4的语义输出
@@ -333,52 +323,74 @@ class Baseline(nn.Module):
                 return feats
 
         else:
-            return self.train_forward(feats, f_sp, labels,sub, **kwargs)
+            return self.train_forward(feats, alpha, f_sh, f_sp,sp_pl, labels,sub, **kwargs)
 
 
 
-    def train_forward(self, feat , f_sp, labels,sub, **kwargs):
+    def train_forward(self, feat, alpha, f_sh, f_sp, sp_pl ,labels,sub, **kwargs):
         epoch = kwargs.get('epoch')
         metric = {}
         loss = 0
 
+        metric.update({'alpha': alpha.data})
         t_sub = sub.long()
 
         sp_logits = self.special_D(f_sp) #F_sh
-        sp_c_loss = self.sp_loss(sp_logits.float(), t_sub)
-        loss += sp_c_loss
-        metric.update({'sp_c_loss': sp_c_loss.data})
+        sp_loss = self.id_loss(sp_logits.float(), t_sub) #鼓励判别器识别不出sh
+        loss += sp_loss
+        metric.update({'sp_loss': sp_loss.data})
 
         if self.triplet:
 
             triplet_loss, _, _, _ = self.triplet_loss(feat.float(), labels) # 共享特征
             trip_loss = triplet_loss
-            loss += triplet_loss
+            if self.decompose:
+                triplet_loss_im, _, _, _ = self.triplet_loss(sp_pl.float(), labels)
+                trip_loss += triplet_loss_im
+            loss += trip_loss
             metric.update({'tri': trip_loss.data})
 
-        bb = 120  #90
+        if self.align:
+            v_labels = labels[sub == 0]
+            i_labels = labels[sub == 1]
 
+            align_loss = self.modality_align_loss(feat[sub == 0], feat[sub == 1], v_labels,i_labels)
+            align_loss = align_loss * 0.2
+            loss += align_loss
+            metric.update({'align_loss': align_loss.data})
+
+        bb = 120  #90
 
         if self.TGSA:
             sf_sh_dist_v = kl_soft_dist(feat[sub == 0], feat[sub == 0])
             sf_sh_dist_i = kl_soft_dist(feat[sub == 1], feat[sub == 1])
             #可见光和红外光共享各取一半拼接
-            # half_B0 = feat[sub == 0].shape[0] // 2
-            # feat_half0 = feat[sub == 0][:half_B0]
-            # half_B1 = feat[sub == 1].shape[0] // 2
-            # feat_half1 = feat[sub == 1][:half_B1]
-            # feat_cross = torch.cat((feat_half0, feat_half1), dim=0)
-            # sf_sh_dist_vi = kl_soft_dist(feat_cross, feat_cross) #得到跨模态共享特征的距离分布
+            half_B0 = feat[sub == 0].shape[0] // 2
+            feat_half0 = feat[sub == 0][:half_B0]
+            half_B1 = feat[sub == 1].shape[0] // 2
+            feat_half1 = feat[sub == 1][:half_B1]
+            feat_cross = torch.cat((feat_half0, feat_half1), dim=0)
+            sf_sh_dist_vi = kl_soft_dist(feat_cross, feat_cross) #得到跨模态共享特征的距离分布
             _, kl_intra1 = Bg_kl(sf_sh_dist_v, sf_sh_dist_i)
-            # _, kl_intra2 = Bg_kl(sf_sh_dist_v, sf_sh_dist_vi)
-            # _, kl_intra3 = Bg_kl(sf_sh_dist_vi, sf_sh_dist_i)
-            # kl_intra = kl_intra1 + kl_intra2 + kl_intra3
-
+            _, kl_intra2 = Bg_kl(sf_sh_dist_v, sf_sh_dist_vi)
+            _, kl_intra3 = Bg_kl(sf_sh_dist_vi, sf_sh_dist_i)
+            kl_intra = kl_intra1 + kl_intra2 + kl_intra3
+            if self.decompose:
+                sf_sp_dist_v = kl_soft_dist(sp_pl[sub == 0], sp_pl[sub == 0])  # 可见光模态特定特征的非对角距离分布
+                sf_sp_dist_i = kl_soft_dist(sp_pl[sub == 1], sp_pl[sub == 1])
+                _, kl_inter_v = Bg_kl(sf_sh_dist_v, sf_sp_dist_v) #模型特征模仿特定特征 对齐visible
+                _, kl_inter_i = Bg_kl(sf_sh_dist_i, sf_sp_dist_i) #模型特征模仿特定特征 对齐infrared
+                kl_inter = kl_inter_v + kl_inter_i
             # 如果当前批次是完整的（例如 120），使用正常的加权方式。
             if feat.size(0) == bb:
-                soft_dt = kl_intra1
+                soft_dt = kl_intra
+                if self.decompose:
+                    soft_dt += kl_inter * 0.6
+            # 批次不完整采取更小的权重
             else:
                 soft_dt = kl_intra1 * 0.1
+                if self.decompose:
+                    soft_dt += kl_inter * 0.1
 
             loss += soft_dt
             metric.update({'soft_dt': soft_dt.data})
@@ -390,77 +402,77 @@ class Baseline(nn.Module):
             loss += center_loss
             metric.update({'cen': center_loss.data})
         # 最大化不同类别中心之间的距离，从而优化类间分离
-        if self.center_cluster and epoch > 70:
+        if self.center_cluster:
             center_cluster_loss, _, _ = self.center_cluster_loss(feat.float(), labels)
             loss += center_cluster_loss
             metric.update({'cc': center_cluster_loss.data})
 
         # 同时约束模态共享特征（feat）和模态特定特征（sp_pl）的判别力
-        if self.fb_dt:
+        if self.fb_dt and self.decompose:
             loss_f_d_ap = Fb_dt(feat, labels) #模态共享特征
-            fb_loss = loss_f_d_ap
+            loss_Fb_im = Fb_dt(sp_pl, labels) #模态特定特征
+            fb_loss = loss_f_d_ap + loss_Fb_im
             loss += fb_loss
 
             metric.update({'f_dt': fb_loss.data})
 
         feat = self.bn_neck(feat)
+        if self.decompose:
+            sp_pl = self.bn_neck_sp(sp_pl)
+        sub_nb = sub + 0  ##模态标签
 
-        # sub_nb = sub + 0  ##模态标签
-        #
-        # pseu_sh_logits = self.D_shared_pseu(feat) #F_sh
-        # p_sub = sub_nb.chunk(2)[0].repeat_interleave(2) #构造标签
-        # pp_sub = torch.roll(p_sub, -1) #反转标签
-        # pseu_loss = self.id_loss(pseu_sh_logits.float(), pp_sub) #鼓励判别器识别不出sh
-        # loss += pseu_loss
-        # metric.update({'pseudo_loss': pseu_loss.data})
+        if self.decompose:
+            logits_sp = self.classifier_sp(sp_pl)  # self.bn_neck_un(sp_pl) sp分类得分
+            loss_id_sp = self.id_loss(logits_sp.float(), labels) # 交叉熵损失
+            sp_logits = self.D_special(sp_pl)  #F_sp输入给判别器
+            discr_loss = self.id_loss(sp_logits.float(), sub_nb) #鼓励判别器识别sp
+            metric.update({'discriminate_loss': discr_loss.data})
+            metric.update({'loss_id_sp': loss_id_sp.data})
+            loss += loss_id_sp + discr_loss
+
+        pseu_sh_logits = self.D_shared_pseu(feat) #F_sh
+        p_sub = sub_nb.chunk(2)[0].repeat_interleave(2) #构造标签
+        pp_sub = torch.roll(p_sub, -1) #反转标签
+        pseu_loss = self.id_loss(pseu_sh_logits.float(), pp_sub) #鼓励判别器识别不出sh
+        loss += pseu_loss
+        metric.update({'pseudo_loss': pseu_loss.data})
 
         if self.classification:
             logits = self.classifier(feat)
             if self.CSA1:
                 _, intra_bg = Bg_kl(logits[sub == 0], logits[sub == 1])  # 共享和红外对齐
                 bg_loss = intra_bg
-                loss += bg_loss
-                metric.update({'bg_kl': bg_loss.data})
             if self.CSA2:
                 _, intra_Sm = Sm_kl(logits[sub == 0], logits[sub == 1], labels)  # 模态互相学习
                 sm_kl_loss = intra_Sm
+            if self.decompose:
+                if self.CSA1:
+                    _, inter_bg_v = Bg_kl(logits[sub == 0], logits_sp[sub == 0]) #强制共享可见光 Logits 模仿特定可见光 Logits
+                    _, inter_bg_i = Bg_kl(logits[sub == 1], logits_sp[sub == 1]) #强制共享红外光 Logits 模仿特定可见光 Logits
+                    inter_bg = inter_bg_v + inter_bg_i
+                    if feat.size(0) == bb:
+                        bg_loss += inter_bg * 0.8
+                    else:
+                        bg_loss += inter_bg * 0.3
+
+                if self.CSA2:
+                    _, inter_Sm_v = Sm_kl(logits[sub == 0], logits_sp[sub == 0], labels) # sh Logits 在批次内语义结构上模仿sp Logits
+                    _, inter_Sm_i = Sm_kl(logits[sub == 1], logits_sp[sub == 1], labels)
+                    inter_Sm = inter_Sm_v + inter_Sm_i # 隐式蒸馏
+                    if feat.size(0) == bb:
+                        sm_kl_loss += inter_Sm * 0.8
+                    else:
+                        sm_kl_loss += inter_Sm * 0.3
+
+            if self.CSA1:
+                loss += bg_loss
+                metric.update({'bg_kl': bg_loss.data})
+            if self.CSA2:
                 sm_kl_loss = sm_kl_loss
                 loss += sm_kl_loss
                 metric.update({'sm_kl': sm_kl_loss.data})
-
             cls_loss = self.id_loss(logits.float(), labels) # 基础识别id的能力
             loss += cls_loss
             metric.update({'acc': calc_acc(logits.data, labels), 'id_loss': cls_loss.data})
-
-        if False:
-            # cam_ids = kwargs.get('cam_ids')
-            # sub = (cam_ids == 3) + (cam_ids == 6)
-
-            logits_v = self.visible_classifier(feat[sub == 0])
-            v_cls_loss = self.id_loss(logits_v.float(), labels[sub == 0])
-            loss += v_cls_loss * self.weight_sid
-            logits_i = self.infrared_classifier(feat[sub == 1])
-            i_cls_loss = self.id_loss(logits_i.float(), labels[sub == 1])
-            loss += i_cls_loss * self.weight_sid
-
-            logits_m = torch.cat([logits_v, logits_i], 0).float()
-            with torch.no_grad():
-                self.infrared_classifier_.weight.data = self.infrared_classifier_.weight.data * (1 - self.update_rate) \
-                                                        + self.infrared_classifier.weight.data * self.update_rate
-                self.visible_classifier_.weight.data = self.visible_classifier_.weight.data * (1 - self.update_rate) \
-                                                       + self.visible_classifier.weight.data * self.update_rate
-
-                logits_v_ = self.infrared_classifier_(feat[sub == 0])
-                logits_i_ = self.visible_classifier_(feat[sub == 1])
-
-                logits_m_ = torch.cat([logits_v_, logits_i_], 0).float()
-            logits_m = F.softmax(logits_m, 1)
-            logits_m_ = F.log_softmax(logits_m_, 1)
-            mod_loss = self.KLDivLoss(logits_m_, logits_m)
-
-            loss += mod_loss * self.weight_KL + (v_cls_loss + i_cls_loss) * self.weight_sid
-            metric.update({'ce-v': v_cls_loss.data})
-            metric.update({'ce-i': i_cls_loss.data})
-            metric.update({'KL': mod_loss.data})
 
         return loss, metric #对应engine代码下的返回损失和指标

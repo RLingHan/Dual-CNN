@@ -7,8 +7,6 @@ import torch
 import math
 from layers.module.CBAM import cbam
 from models.channel import AdaptiveGlobalModule, MUMModule
-from models.mada import PartSoftmaxAttention
-from models.ms3m import MS3M
 
 __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
            'resnet152', 'resnext50_32x4d', 'resnext101_32x8d']
@@ -23,6 +21,45 @@ model_urls = {
     'resnext101_32x8d': 'https://download.pytorch.org/models/resnext101_32x8d-8ba56ff5.pth',
 }
 
+
+def cross_modality_hallucination(feat_sh, feat_sp, labels, sub, lam=0.3):
+    """
+    feat_sh: [B, C, H, W] 共享特征
+    feat_sp: [B, C, H, W] 特有特征
+    labels: [B] 身份标签 (ID)
+    sub: [B] 模态标签 (0:IR, 1:RGB)
+    lam: 注入强度超参数
+    """
+    batch_size = feat_sh.size(0)
+    device = feat_sh.device
+    # ===== 完全向量化实现 =====
+    # 1. 构造掩码矩阵 [B, B]: mask[i,j]=True 表示j可以作为i的干扰源
+    # 条件: sub[i] != sub[j] AND labels[i] != labels[j]
+    # sub不同的mask [B, B]
+    sub_diff = sub.unsqueeze(1) != sub.unsqueeze(0)  # [B, 1] != [1, B] → [B, B]
+    # labels不同的mask [B, B]
+    label_diff = labels.unsqueeze(1) != labels.unsqueeze(0)
+    # 合并条件
+    valid_mask = sub_diff & label_diff  # [B, B]
+    # 2. 为每行随机选择一个有效索引
+    # 给无效位置赋极小概率,有效位置赋相等概率
+    rand_weights = torch.rand(batch_size, batch_size, device=device)
+    rand_weights = rand_weights * valid_mask.float()  # 无效位置权重=0
+    # 如果某行全是0(没有有效候选),随机选一个(虽然不满足条件,但避免崩溃)
+    row_sum = rand_weights.sum(dim=1, keepdim=True)
+    rand_weights = rand_weights / (row_sum + 1e-8)  # 归一化为概率
+    # 3. 采样: 用multinomial或argmax
+    # 方法A: argmax(更快,但随机性略差)
+    selected_indices = rand_weights.argmax(dim=1)  # [B]
+    # 4. 根据selected_indices索引feat_sp
+    # feat_sp[selected_indices]: [B, C, H, W]
+    selected_sp = feat_sp[selected_indices]  # 自动广播
+    # 5. 注入
+    feat_hallu = feat_sh + lam * selected_sp
+    # 6. 记录哪些位置有效注入(可选,用于调试)
+    hallu_mask = valid_mask.any(dim=1).float()  # [B]
+
+    return feat_hallu, hallu_mask
 
 class convDiscrimination(nn.Module):
     def __init__(self, dim=512):
@@ -260,24 +297,6 @@ class ResNet(nn.Module):
 
         return x
 
-class Shared_baseline(nn.Module):
-    def __init__(self, drop_last_stride):
-        super(Shared_baseline, self).__init__()
-
-        model_sh = resnet50(pretrained=True, drop_last_stride=drop_last_stride)
-        # avg pooling to global pooling
-        self.model_sh = model_sh
-
-    def forward(self, x):
-        x = self.model_sh.conv1(x)
-        x = self.model_sh.bn1(x)
-        x = self.model_sh.relu(x)
-        x = self.model_sh.maxpool(x)
-        x = self.model_sh.layer1(x)
-        x = self.model_sh.layer2(x)
-
-        return x
-
 
 class Shared_module_fr(nn.Module):
     def __init__(self, drop_last_stride, modality_attention=0):
@@ -295,7 +314,19 @@ class Shared_module_fr(nn.Module):
         x = self.model_sh_fr.maxpool(x)
         x = self.model_sh_fr.layer1(x)
         x = self.model_sh_fr.layer2(x)
+        return x
 
+class Special_module(nn.Module):
+    def __init__(self, drop_last_stride, modality_attention=0):
+        super(Special_module, self).__init__()
+
+        special_module = resnet50(pretrained=True, drop_last_stride=drop_last_stride,)
+        self.special_module = special_module
+
+    def forward(self, x):
+        # x = self.special_module.layer2(x)
+        x = self.special_module.layer3(x)
+        x = self.special_module.layer4(x)
         return x
 
 class Shared_module_bh(nn.Module):
@@ -323,6 +354,8 @@ class Special_module_bh(nn.Module):
         x3 = self.special_module.layer3(x)  # self.model_sh_fr  self.model_sh_bh
         x4 = self.special_module.layer4(x3)  # self.model_sh_fr  self.model_sh_bh
         return x3, x4
+
+
 
 
 class Mask(nn.Module):
@@ -371,46 +404,103 @@ class embed_net(nn.Module):
     def __init__(self, drop_last_stride,  decompose=False):
         super(embed_net, self).__init__()
 
-        # self.shared_module_fr = Shared_module_fr(drop_last_stride=drop_last_stride)
-        # self.shared_module_bh = Shared_module_bh(drop_last_stride=drop_last_stride)
-        self.shared_module = Shared_baseline(drop_last_stride=drop_last_stride)
+        self.shared_module_fr = Shared_module_fr(drop_last_stride=drop_last_stride)
+        self.shared_module_bh = Shared_module_bh(drop_last_stride=drop_last_stride)
+
+        self.v_cbam = cbam(512)
+        self.i_cbam = cbam(512)
+        self.alpha = nn.Parameter(torch.tensor(-2.0), requires_grad=True)
+
         # self.adp_global = AdaptiveGlobalModule(1024)
-        # self.V_bh = Special_module_bh(drop_last_stride=drop_last_stride)
-        # self.I_bh = Special_module_bh(drop_last_stride=drop_last_stride)
+
+        self.V_bh = Special_module_bh(drop_last_stride=drop_last_stride)
+        self.I_bh = Special_module_bh(drop_last_stride=drop_last_stride)
         self.mum = MUMModule(in_channels=1024)
-        # self.mada = PartSoftmaxAttention(
-        #     in_channels=2048,
-        #     num_parts=6
-        # )
 
-        self.ms3m = MS3M(in_channels=1024, reduction=16, scales=[3, 5, 7])
-        # self.mam3 = MAM(1024)
-        # self.mam4 = MAM(2048)
-
+        self.decompose = decompose
+        if self.decompose:
+            self.mask1 = Mask(2048)
+            self.mask2 = Mask(2048)
     def forward(self, x, sub ,labels):
         batch_size = x.size(0)
-        # x2 = self.shared_module_fr(x)  # (B, 512, H, W)
+        x2 = self.shared_module_fr(x)  # (B, 512, H, W)
 
+        # 检查模态存在性
+        has_visible = (sub == 0).any()
+        has_infrared = (sub == 1).any()
+        alpha = torch.sigmoid(self.alpha)
+        # ===== 跨模态CBAM融合 =====
+        if has_visible and has_infrared:
+            # 情况1:双模态都存在 -> 跨模态融合
+            x_v = x2[sub == 0]
+            x_i = x2[sub == 1]
+            v_ca, v_sa = self.v_cbam(x_v)
+            i_ca, i_sa = self.i_cbam(x_i)
+            # 应用自身注意力
+            x_v = x_v * v_ca * v_sa
+            x_i = x_i * i_ca * i_sa
+            # 跨模态互补增强
+            out_v = x_v + alpha * x_v * i_ca * i_sa
+            out_i = x_i + alpha * x_i * v_ca * v_sa
+            # 重组
+            x2_new = torch.zeros_like(x2)
+            x2_new[sub == 0] = out_v
+            x2_new[sub == 1] = out_i
+            x2 = x2_new
+
+        elif has_visible:
+            # 情况2:只有可见光 -> 只用自己的CBAM
+            x_v = x2[sub == 0]
+            v_ca, v_sa = self.v_cbam(x_v)
+            x2[sub == 0] = x_v * v_ca * v_sa
+
+        elif has_infrared:
+            # 情况3:只有红外 -> 只用自己的CBAM
+            x_i = x2[sub == 1]
+            i_ca, i_sa = self.i_cbam(x_i)
+            x2[sub == 1] = x_i * i_ca * i_sa
+
+        # 共享分支
         # x_sh3, x_sh4 = self.shared_module_bh(x2)
-        # x_sh3 = self.shared_module_bh.model_sh_bh.layer3(x2)
-
-
-        # x_sh3 = self.adp_global(x_sh3)  # 全局上下文
-        x = self.shared_module(x)
-        x_sh3 = self.shared_module.model_sh.layer3(x)  # self.model_sh_fr  self.model_sh_bh
-        # x_sh3 = self.mam3(x_sh3)
+        x_sh3 = self.shared_module_bh.model_sh_bh.layer3(x2)
         m_sh, m_sp, p_mod = self.mum(x_sh3)
         f_sh = x_sh3 * m_sh
         f_sp = x_sh3 * m_sp
-        # f_sh, f_sp = self.ms3m(f_sh, f_sp)
-        x_sh4 = self.shared_module.model_sh.layer4(f_sh)  # self.model_sh_fr  self.model_sh_bh
-            # x_sh4 = self.mada(x_sh4)
+        # x_sh3 = self.adp_global(x_sh3)  # 全局上下文
+        if self.training:
+            f_hallu, _ = cross_modality_hallucination(f_sh, f_sp, labels, sub)
+            x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_hallu)
+        else:
+            x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_sh)
         # 池化得到最终共享特征
-        # x_sh4 = self.mam4(x_sh4)
         sh_pl = gem(x_sh4).squeeze()
         sh_pl = sh_pl.view(sh_pl.size(0), -1)
 
-        return sh_pl, f_sp
+        if self.decompose:
+            sp_pl = torch.zeros_like(sh_pl)
+
+            if has_visible:
+                x_v3, x_v4 = self.V_bh(x2[sub == 0])
+                v_m = self.mask1(x_v4)
+                x_v4 = v_m * x_v4
+                v_pl = gem(x_v4).squeeze()
+                if v_pl.numel() > 0:
+                    v_pl = v_pl.view(v_pl.size(0), -1)
+                    sp_pl[sub == 0] = v_pl
+
+            if has_infrared:
+                x_i3, x_i4 = self.I_bh(x2[sub == 1])
+                x_m = self.mask2(x_i4)
+                x_i4 = x_m * x_i4
+                i_pl = gem(x_i4).squeeze()
+                if i_pl.numel() > 0:
+                    i_pl = i_pl.view(i_pl.size(0), -1)
+                    sp_pl[sub == 1] = i_pl
+
+        if self.decompose:
+            return sh_pl, alpha, f_sh, f_sp, sp_pl
+        else:
+            return sh_pl, alpha, f_sh, f_sp, None
 
 
 def _resnet(arch, block, layers, pretrained, progress, **kwargs):

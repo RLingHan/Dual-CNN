@@ -12,7 +12,7 @@ class MUMModule(nn.Module):
             nn.BatchNorm1d(in_channels // 2),
             nn.ReLU(inplace=True),
             nn.Linear(in_channels // 2, in_channels),
-            # nn.Sigmoid()  # 输出 P_c: 每个通道属于 RGB 的概率
+            nn.Sigmoid()  # 输出 P_c: 每个通道属于 RGB 的概率
         )
 
     def forward(self, x):
@@ -23,10 +23,8 @@ class MUMModule(nn.Module):
         feat_gap = F.avg_pool2d(x, (h, w)).view(b, c)
 
         # 2. 预测模态概率 P
-        P_logits = self.discriminator(feat_gap)  # [B, C] 未经Sigmoid
-
-        # 生成mask时才用Sigmoid
-        P = torch.sigmoid(P_logits)  # [B, C] ∈ [0,1]
+        # P ≈ 1: 强偏向可见光; P ≈ 0: 强偏向红外; P ≈ 0.5: 模态不确定 (Shared)
+        P = self.discriminator(feat_gap)
 
         # 3. 生成软掩码 (Soft Mask)
         # Shared Mask: 采用三角波函数，在 0.5 处取得极大值 1
@@ -39,7 +37,7 @@ class MUMModule(nn.Module):
         mask_sh = mask_sh.view(b, c, 1, 1)
         mask_sp = mask_sp.view(b, c, 1, 1)
 
-        return mask_sh, mask_sp, P_logits
+        return mask_sh, mask_sp, P
 
 class FeatureDecomposition(nn.Module):
     """将特征分解为模态共享和模态特定"""
