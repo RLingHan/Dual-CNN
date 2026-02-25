@@ -17,7 +17,7 @@ decompose: false
 IP: false
 distalign: false
 classification: true
-center_cluster: false
+center_cluster: true
 triplet: true
 fb_dt: false #true
 center: false
