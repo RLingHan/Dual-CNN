@@ -384,8 +384,8 @@ class embed_net(nn.Module):
         # )
 
         self.ms3m = MS3M(in_channels=1024, reduction=16, scales=[3, 5, 7])
-        self.mam3 = MAM(1024)
-        self.mam4 = MAM(2048)
+        # self.mam3 = MAM(1024)
+        # self.mam4 = MAM(2048)
 
     def forward(self, x, sub ,labels):
         batch_size = x.size(0)
@@ -398,7 +398,7 @@ class embed_net(nn.Module):
         # x_sh3 = self.adp_global(x_sh3)  # 全局上下文
         x = self.shared_module(x)
         x_sh3 = self.shared_module.model_sh.layer3(x)  # self.model_sh_fr  self.model_sh_bh
-        x_sh3 = self.mam3(x_sh3)
+        # x_sh3 = self.mam3(x_sh3)
         m_sh, m_sp, p_mod = self.mum(x_sh3)
         f_sh = x_sh3 * m_sh
         f_sp = x_sh3 * m_sp
@@ -406,7 +406,7 @@ class embed_net(nn.Module):
         x_sh4 = self.shared_module.model_sh.layer4(f_sh)  # self.model_sh_fr  self.model_sh_bh
             # x_sh4 = self.mada(x_sh4)
         # 池化得到最终共享特征
-        x_sh4 = self.mam4(x_sh4)
+        # x_sh4 = self.mam4(x_sh4)
         sh_pl = gem(x_sh4).squeeze()
         sh_pl = sh_pl.view(sh_pl.size(0), -1)
 

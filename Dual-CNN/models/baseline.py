@@ -390,7 +390,7 @@ class Baseline(nn.Module):
             loss += center_loss
             metric.update({'cen': center_loss.data})
         # 最大化不同类别中心之间的距离，从而优化类间分离
-        if self.center_cluster:
+        if self.center_cluster and epoch > 70:
             center_cluster_loss, _, _ = self.center_cluster_loss(feat.float(), labels)
             loss += center_cluster_loss
             metric.update({'cc': center_cluster_loss.data})
