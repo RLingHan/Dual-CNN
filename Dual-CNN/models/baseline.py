@@ -269,7 +269,7 @@ class Baseline(nn.Module):
 
         self.IP = kwargs.get('IP', False)
         self.fb_dt = kwargs.get('fb_dt', False)
-        self.mutual_learning = kwargs.get('mutual_learning', True)
+        self.mutual_learning = kwargs.get('mutual_learning', False)
 
         self.D_shared_pseu = Discrimination()  # 伪模态分类器（共享特征分支）
         self.special_D = convDiscrimination(1024)
@@ -288,7 +288,7 @@ class Baseline(nn.Module):
         if self.center_loss:
             self.center_loss = CenterLoss(num_classes, self.base_dim + self.dim * self.part_num)
 
-        if True:
+        if False:
             self.dim = 0
             self.part_num = 0
             self.visible_classifier = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False)
@@ -432,7 +432,7 @@ class Baseline(nn.Module):
             loss += cls_loss
             metric.update({'acc': calc_acc(logits.data, labels), 'id_loss': cls_loss.data})
 
-        if True:
+        if False:
             # cam_ids = kwargs.get('cam_ids')
             # sub = (cam_ids == 3) + (cam_ids == 6)
 
