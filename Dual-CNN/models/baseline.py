@@ -244,7 +244,6 @@ class Baseline(nn.Module):
 
         self.base_dim = 2048
 
-
         print("output feat length:{}".format(self.base_dim))
         self.bn_neck = nn.BatchNorm1d(self.base_dim)
         nn.init.constant_(self.bn_neck.bias, 0)
@@ -270,7 +269,7 @@ class Baseline(nn.Module):
 
         self.IP = kwargs.get('IP', False)
         self.fb_dt = kwargs.get('fb_dt', False)
-        self.mutual_learning = kwargs.get('mutual_learning', False)
+        self.mutual_learning = kwargs.get('mutual_learning', True)
 
         self.D_shared_pseu = Discrimination()  # 伪模态分类器（共享特征分支）
         self.special_D = convDiscrimination(1024)
@@ -288,6 +287,26 @@ class Baseline(nn.Module):
             self.center_cluster_loss = CenterTripletLoss(k_size=k_size, margin=self.margin)
         if self.center_loss:
             self.center_loss = CenterLoss(num_classes, self.base_dim + self.dim * self.part_num)
+
+        if True:
+            self.dim = 0
+            self.part_num = 0
+            self.visible_classifier = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False)
+            self.infrared_classifier = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False)
+
+            self.visible_classifier_ = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False)
+            self.visible_classifier_.weight.requires_grad_(False)
+            self.visible_classifier_.weight.data = self.visible_classifier.weight.data
+
+            self.infrared_classifier_ = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False)
+            self.infrared_classifier_.weight.requires_grad_(False)
+            self.infrared_classifier_.weight.data = self.infrared_classifier.weight.data
+
+            self.KLDivLoss = nn.KLDivLoss(reduction='batchmean')
+            self.weight_sid = kwargs.get('weight_sid', 0.5)
+            self.weight_KL = kwargs.get('weight_KL', 2.5)
+            self.update_rate = kwargs.get('update_rate', 0.2)
+            self.update_rate_ = self.update_rate
 
     def forward(self, inputs, labels=None, **kwargs):
 
@@ -413,5 +432,35 @@ class Baseline(nn.Module):
             loss += cls_loss
             metric.update({'acc': calc_acc(logits.data, labels), 'id_loss': cls_loss.data})
 
+        if True:
+            # cam_ids = kwargs.get('cam_ids')
+            # sub = (cam_ids == 3) + (cam_ids == 6)
+
+            logits_v = self.visible_classifier(feat[sub == 0])
+            v_cls_loss = self.id_loss(logits_v.float(), labels[sub == 0])
+            loss += v_cls_loss * self.weight_sid
+            logits_i = self.infrared_classifier(feat[sub == 1])
+            i_cls_loss = self.id_loss(logits_i.float(), labels[sub == 1])
+            loss += i_cls_loss * self.weight_sid
+
+            logits_m = torch.cat([logits_v, logits_i], 0).float()
+            with torch.no_grad():
+                self.infrared_classifier_.weight.data = self.infrared_classifier_.weight.data * (1 - self.update_rate) \
+                                                        + self.infrared_classifier.weight.data * self.update_rate
+                self.visible_classifier_.weight.data = self.visible_classifier_.weight.data * (1 - self.update_rate) \
+                                                       + self.visible_classifier.weight.data * self.update_rate
+
+                logits_v_ = self.infrared_classifier_(feat[sub == 0])
+                logits_i_ = self.visible_classifier_(feat[sub == 1])
+
+                logits_m_ = torch.cat([logits_v_, logits_i_], 0).float()
+            logits_m = F.softmax(logits_m, 1)
+            logits_m_ = F.log_softmax(logits_m_, 1)
+            mod_loss = self.KLDivLoss(logits_m_, logits_m)
+
+            loss += mod_loss * self.weight_KL + (v_cls_loss + i_cls_loss) * self.weight_sid
+            metric.update({'ce-v': v_cls_loss.data})
+            metric.update({'ce-i': i_cls_loss.data})
+            metric.update({'KL': mod_loss.data})
 
         return loss, metric #对应engine代码下的返回损失和指标
