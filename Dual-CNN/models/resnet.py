@@ -472,7 +472,7 @@ class embed_net(nn.Module):
         sh_pl = gem(x_sh4).squeeze()
         sh_pl = sh_pl.view(sh_pl.size(0), -1)
 
-        return sh_pl, alpha, f_sh, f_sp, None
+        return sh_pl, alpha, f_sh, f_sp
 
 
 def _resnet(arch, block, layers, pretrained, progress, **kwargs):
