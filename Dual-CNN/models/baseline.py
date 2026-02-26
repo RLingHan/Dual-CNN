@@ -135,6 +135,63 @@ def Sm_kl(logits1, logits2, labels):
     sm_kl_loss = sm_kl_loss_vi + sm_kl_loss_iv
     return sm_kl_loss_vi, sm_kl_loss
 
+def Sm_kl_improved(logits1, logits2, labels):
+    """
+    对同一身份的 logits 取加权均值中心，再计算跨模态对称 KL 散度。
+    权重由样本与本身份内其他样本的余弦相似度均值决定，过滤离群角度样本。
+
+    Args:
+        logits1: (N, C) 可见光 logits
+        logits2: (N, C) 红外 logits
+        labels:  (N,)  身份标签，假设同一身份样本连续排列
+    Returns:
+        sm_kl_loss_vi, sm_kl_loss
+    """
+    KL = nn.KLDivLoss(reduction='batchmean')
+    unique_ids = labels.unique()
+    num_ids = unique_ids.shape[0]
+    N, C = logits1.shape
+
+    # ---- 构造 one-hot mask: (num_ids, N) ----
+    # mask[i, j] = 1 表示第 j 个样本属于第 i 个身份
+    id_matrix = (unique_ids.unsqueeze(1) == labels.unsqueeze(0)).float()  # (num_ids, N)
+    counts = id_matrix.sum(dim=1, keepdim=True)  # (num_ids, 1) 每个身份的样本数
+
+    # ---- 简单均值原型: (num_ids, C) ----
+    # 先用均值原型计算组内余弦相似度权重
+    proto_v_mean = (id_matrix @ logits1) / counts  # (num_ids, C)
+    proto_i_mean = (id_matrix @ logits2) / counts  # (num_ids, C)
+
+    # ---- 计算组内余弦相似度权重 ----
+    # 对每个样本，计算其与所属身份均值原型的余弦相似度作为权重
+    # 比全样本两两计算更高效，且语义等价（中心相似度近似组内平均相似度）
+    #
+    # proto_expanded: (N, C)，每行是该样本所属身份的均值原型
+    proto_v_expanded = id_matrix.t() @ proto_v_mean  # (N, C)
+    proto_i_expanded = id_matrix.t() @ proto_i_mean  # (N, C)
+
+    sim_v = F.cosine_similarity(logits1, proto_v_expanded, dim=1)  # (N,)
+    sim_i = F.cosine_similarity(logits2, proto_i_expanded, dim=1)  # (N,)
+
+    # 组内 softmax 归一化权重
+    # 先将不属于该身份的位置置为 -inf，再 softmax
+    masked_sim_v = id_matrix * sim_v.unsqueeze(0) + (1 - id_matrix) * (-1e9)  # (num_ids, N)
+    masked_sim_i = id_matrix * sim_i.unsqueeze(0) + (1 - id_matrix) * (-1e9)  # (num_ids, N)
+
+    weight_v = F.softmax(masked_sim_v, dim=1)  # (num_ids, N)
+    weight_i = F.softmax(masked_sim_i, dim=1)  # (num_ids, N)
+
+    # ---- 加权均值原型: (num_ids, C) ----
+    proto_v = weight_v @ logits1  # (num_ids, C)
+    proto_i = weight_i @ logits2  # (num_ids, C)
+
+    # ---- 对称 KL 散度 ----
+    sm_kl_loss_vi = KL(F.log_softmax(proto_v, dim=1), F.softmax(proto_i, dim=1))
+    sm_kl_loss_iv = KL(F.log_softmax(proto_i, dim=1), F.softmax(proto_v, dim=1))
+    sm_kl_loss = sm_kl_loss_vi + sm_kl_loss_iv
+
+    return sm_kl_loss_vi, sm_kl_loss
+
 # 每个样本的预测熵 熵高 → 模型不确定
 def samplewise_entropy(logits):
     probabilities = F.softmax(logits, dim=1)
@@ -443,7 +500,7 @@ class Baseline(nn.Module):
                 _, intra_bg = Bg_kl(logits[sub == 0], logits[sub == 1])  # 共享和红外对齐
                 bg_loss = intra_bg
             if self.CSA2:
-                _, intra_Sm = Sm_kl(logits[sub == 0], logits[sub == 1], labels)  # 模态互相学习
+                _, intra_Sm = Sm_kl_improved(logits[sub == 0], logits[sub == 1], labels)  # 模态互相学习
                 sm_kl_loss = intra_Sm
             if self.decompose:
                 if self.CSA1:
@@ -456,8 +513,8 @@ class Baseline(nn.Module):
                         bg_loss += inter_bg * 0.3
 
                 if self.CSA2:
-                    _, inter_Sm_v = Sm_kl(logits[sub == 0], logits_sp[sub == 0], labels) # sh Logits 在批次内语义结构上模仿sp Logits
-                    _, inter_Sm_i = Sm_kl(logits[sub == 1], logits_sp[sub == 1], labels)
+                    _, inter_Sm_v = Sm_kl_improved(logits[sub == 0], logits_sp[sub == 0], labels) # sh Logits 在批次内语义结构上模仿sp Logits
+                    _, inter_Sm_i = Sm_kl_improved(logits[sub == 1], logits_sp[sub == 1], labels)
                     inter_Sm = inter_Sm_v + inter_Sm_i # 隐式蒸馏
                     if feat.size(0) == bb:
                         sm_kl_loss += inter_Sm * 0.8
