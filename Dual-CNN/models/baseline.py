@@ -500,7 +500,7 @@ class Baseline(nn.Module):
                 _, intra_bg = Bg_kl(logits[sub == 0], logits[sub == 1])  # 共享和红外对齐
                 bg_loss = intra_bg
             if self.CSA2:
-                _, intra_Sm = Sm_kl_improved(logits[sub == 0], logits[sub == 1], labels)  # 模态互相学习
+                _, intra_Sm = Sm_kl_improved(logits[sub == 0], logits[sub == 1], labels[sub==0])  # 模态互相学习
                 sm_kl_loss = intra_Sm
             if self.decompose:
                 if self.CSA1:
