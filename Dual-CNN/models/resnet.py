@@ -513,20 +513,9 @@ class embed_net(nn.Module):
         x = self.shared_module_fr(x)
         # x1 = self.ibn1(x)
         x2 = self.shared_module_fr.model_sh_fr.layer2(x)
-        # 检查模态存在性
-        x_v = x2[sub == 0]
-        x_i = x2[sub == 1]
-        v_ca, v_sa = self.v_cbam(x_v)
-        i_ca, i_sa = self.i_cbam(x_i)
-        # 应用自身注意力
-        x_v = x_v * v_ca * v_sa
-        x_i = x_i * i_ca * i_sa
-        x2_new = torch.zeros_like(x2)
-        x2_new[sub == 0] = x_v
-        x2_new[sub == 1] = x_i
-        x2 = x2_new
+
         x_sh3 = self.shared_module_bh.model_sh_bh.layer3(x2)
-        x_sh3 = self.mam3(x_sh3)
+        # x_sh3 = self.mam3(x_sh3)
         x_sh4 = self.shared_module_bh.model_sh_bh.layer4(x_sh3)
         x_sh4 = self.mam4(x_sh4)
 
