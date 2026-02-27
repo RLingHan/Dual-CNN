@@ -207,31 +207,16 @@ def modal_centroid_loss(F1, F2, labels, modalities, margin):
     return losses.mean()
 
 
-class ModalityAlignmentLoss(nn.Module):
-    def __init__(self, temperature=0.07):
-        super().__init__()
-        self.temp = temperature
+def orthogonal_loss(sh_pl, pr_pl):
+    # sh_pl: (B, 2048)  pr_pl: (B, 512)
+    sh_norm = F.normalize(sh_pl, dim=0)  # 按batch维归一化，(B, 2048)
+    pr_norm = F.normalize(pr_pl, dim=0)  # 按batch维归一化，(B, 512)
 
-    def forward(self, v_feat, i_feat, v_labels, i_labels):
-        # 此时 v_feat 和 v_labels 都是 N=30
-        v_feat = F.normalize(v_feat, dim=1)
-        i_feat = F.normalize(i_feat, dim=1)
+    # 计算跨特征的相关矩阵 (2048, 512)
+    corr = torch.mm(sh_norm.t(), pr_norm)
 
-        # sim 形状为 (30, 30)
-        sim = torch.mm(v_feat, i_feat.t()) / self.temp
-
-        # v_labels.unsqueeze(1) -> (30, 1)
-        # i_labels.unsqueeze(0) -> (1, 30)
-        labels_eq = v_labels.unsqueeze(1) == i_labels.unsqueeze(0)
-
-        exp_sim = torch.exp(sim)
-        pos_sum = (exp_sim * labels_eq.float()).sum(1)
-        all_sum = exp_sim.sum(1)
-
-        # 增加 1e-8 防止 log(0)
-        loss = -torch.log(pos_sum / (all_sum + 1e-8)).mean()
-        return loss
-
+    # 相关矩阵所有元素都接近0即为正交
+    return (corr ** 2).mean()
 
 class Baseline(nn.Module):
     def __init__(self, num_classes=None, drop_last_stride=False, **kwargs):
@@ -262,9 +247,6 @@ class Baseline(nn.Module):
         self.center_loss = kwargs.get('center', False)
         self.margin = kwargs.get('margin', 0.3)
 
-        self.modality_align_loss = ModalityAlignmentLoss()
-        self.align = False
-
         # 消融实验
         self.CSA1 = kwargs.get('bg_kl', False)
         self.CSA2 = kwargs.get('sm_kl', False)
@@ -275,13 +257,9 @@ class Baseline(nn.Module):
         self.fb_dt = kwargs.get('fb_dt', False)
         self.mutual_learning = kwargs.get('mutual_learning', False)
 
-        self.D_shared_pseu = Discrimination()  # 伪模态分类器（共享特征分支）
-        self.special_D = convDiscrimination(1024)
-
-
         self.classifier = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False)
         if self.classification:
-            self.id_loss = nn.CrossEntropyLoss(ignore_index=-1)
+            self.id_loss = nn.CrossEntropyLoss(label_smoothing=0.1,ignore_index=-1)
         if self.triplet:
             self.triplet_loss = TripletLoss(margin=self.margin)
             self.rerank_loss = RerankLoss(margin=0.7)
@@ -291,6 +269,8 @@ class Baseline(nn.Module):
         if self.center_loss:
             self.center_loss = CenterLoss(num_classes, self.base_dim + self.dim * self.part_num)
 
+        self.private_classifier = nn.Linear(512, num_classes)
+
     def forward(self, inputs, labels=None, **kwargs):
 
         cam_ids = kwargs.get('cam_ids')
@@ -298,7 +278,7 @@ class Baseline(nn.Module):
         #epoch = kwargs.get('epoch')
         # CNN
         #layer4输出  layer4的语义特征  相互调节后的语义特征 mask前/后模态无关特征 mask前/后特别特征
-        sh_pl, alpha, f_sh, f_sp = self.backbone(inputs,sub=sub,labels=labels)
+        sh_pl = self.backbone(inputs,sub=sub,labels=labels)
         #提取特征
 
         feats = sh_pl #layer4的语义输出
@@ -316,54 +296,20 @@ class Baseline(nn.Module):
                 return feats
 
         else:
-            return self.train_forward(feats, alpha, f_sh, f_sp, labels,sub, **kwargs)
+            return self.train_forward(feats,labels,sub, **kwargs)
 
 
 
-    def train_forward(self, feat, alpha, f_sh, f_sp ,labels,sub, **kwargs):
+    def train_forward(self, feat,labels,sub, **kwargs):
         epoch = kwargs.get('epoch')
         metric = {}
         loss = 0
-
-        metric.update({'alpha': alpha.data})
-        t_sub = sub.long()
-
-        sp_logits = self.special_D(f_sp) #F_sh
-        sp_loss = self.id_loss(sp_logits.float(), t_sub) #鼓励判别器识别不出sh
-        loss += sp_loss
-        metric.update({'sp_loss': sp_loss.data})
-
-        sub_nb = t_sub
-
-        # pseu_sh_logits = self.D_shared_pseu(feat) #F_sh
-        # p_sub = sub_nb.chunk(2)[0].repeat_interleave(2) #构造标签
-        # pp_sub = torch.roll(p_sub, -1) #反转标签
-        # pseu_loss = self.id_loss(pseu_sh_logits.float(), pp_sub) #鼓励判别器识别不出sh
-        # loss += pseu_loss
-        # metric.update({'pseudo_loss': pseu_loss.data})
-
-        pseu_sh_logits = self.special_D(f_sh) #F_sh
-        p_sub = sub_nb.chunk(2)[0].repeat_interleave(2) #构造标签
-        pp_sub = torch.roll(p_sub, -1) #反转标签
-        pseu_loss = self.id_loss(pseu_sh_logits.float(), pp_sub) #鼓励判别器识别不出sh
-        loss += pseu_loss
-        metric.update({'pseudo_loss': pseu_loss.data})
-
 
         if self.triplet:
 
             triplet_loss, _, _, _ = self.triplet_loss(feat.float(), labels) # 共享特征
             loss += triplet_loss
             metric.update({'tri': triplet_loss.data})
-
-        if self.align:
-            v_labels = labels[sub == 0]
-            i_labels = labels[sub == 1]
-
-            align_loss = self.modality_align_loss(feat[sub == 0], feat[sub == 1], v_labels,i_labels)
-            align_loss = align_loss * 0.2
-            loss += align_loss
-            metric.update({'align_loss': align_loss.data})
 
         bb = 120  #90
 
@@ -413,14 +359,7 @@ class Baseline(nn.Module):
             metric.update({'f_dt': fb_loss.data})
 
         feat = self.bn_neck(feat)
-        sub_nb = sub + 0  ##模态标签
 
-        pseu_sh_logits = self.D_shared_pseu(feat) #F_sh
-        p_sub = sub_nb.chunk(2)[0].repeat_interleave(2) #构造标签
-        pp_sub = torch.roll(p_sub, -1) #反转标签
-        pseu_loss = self.id_loss(pseu_sh_logits.float(), pp_sub) #鼓励判别器识别不出sh
-        loss += pseu_loss
-        metric.update({'pseudo_loss': pseu_loss.data})
 
         if self.classification:
             logits = self.classifier(feat)

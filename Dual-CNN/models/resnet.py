@@ -21,6 +21,80 @@ model_urls = {
     'resnext101_32x8d': 'https://download.pytorch.org/models/resnext101_32x8d-8ba56ff5.pth',
 }
 
+class GGMAM(nn.Module):
+    """
+    改进的 MAM 模块：
+    - 全局分支：原版 MAM 的 avg_pool 通道注意力（感知整体风格）
+    - 局部分支：条带池化通道注意力（感知空间局部分布）
+    - 门控融合：让网络自己决定每个通道依赖全局还是局部
+    """
+    def __init__(self, dim, r=16):
+        super(GGMAM, self).__init__()
+
+        # ── 全局分支（原版 MAM）──────────────────────────────
+        self.global_attention = nn.Sequential(
+            nn.Conv2d(dim, dim // r, kernel_size=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(dim // r, dim, kernel_size=1, bias=False),
+            nn.Sigmoid()
+        )
+
+        # ── 局部分支：水平 + 垂直条带池化 ───────────────────
+        # 水平条带：(B, C, H, 1) → 压缩 W
+        self.local_h_attention = nn.Sequential(
+            nn.Conv2d(dim, dim // r, kernel_size=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(dim // r, dim, kernel_size=1, bias=False),
+            nn.Sigmoid()
+        )
+        # 垂直条带：(B, C, 1, W) → 压缩 H
+        self.local_w_attention = nn.Sequential(
+            nn.Conv2d(dim, dim // r, kernel_size=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(dim // r, dim, kernel_size=1, bias=False),
+            nn.Sigmoid()
+        )
+
+        # ── 门控：决定每个通道全局/局部的混合比例 ───────────
+        # 输入是全局mask和局部mask拼接后的 2*dim 通道
+        self.gate = nn.Sequential(
+            nn.Conv2d(dim * 2, dim, kernel_size=1, bias=False),
+            nn.Sigmoid()
+        )
+
+        self.IN = nn.InstanceNorm2d(dim, track_running_stats=False)
+
+    def forward(self, x):
+        # ── 全局注意力 mask ──────────────────────────────────
+        global_pool = F.avg_pool2d(x, x.size()[2:])          # (B, C, 1, 1)
+        global_mask = self.global_attention(global_pool)      # (B, C, 1, 1)
+
+        # ── 局部注意力 mask ──────────────────────────────────
+        # 水平条带：沿 W 方向池化，保留 H 维度
+        local_h = x.mean(dim=3, keepdim=True)                 # (B, C, H, 1)
+        local_h_mask = self.local_h_attention(local_h)        # (B, C, H, 1)
+
+        # 垂直条带：沿 H 方向池化，保留 W 维度
+        local_w = x.mean(dim=2, keepdim=True)                 # (B, C, 1, W)
+        local_w_mask = self.local_w_attention(local_w)        # (B, C, 1, W)
+
+        # 水平和垂直条带相乘，得到局部 2D mask
+        local_mask = local_h_mask * local_w_mask              # (B, C, H, W) 广播
+
+        # ── 门控融合 ─────────────────────────────────────────
+        # global_mask 广播到 (B, C, H, W)
+        global_mask_expanded = global_mask.expand_as(local_mask)
+        # 拼接两个 mask，让门控网络决定依赖哪个
+        combined = torch.cat([global_mask_expanded, local_mask], dim=1)  # (B, 2C, H, W)
+        gate = self.gate(combined)                            # (B, C, H, W)，每通道一个门控值
+
+        # 门控加权融合：gate 接近1时偏全局，接近0时偏局部
+        final_mask = gate * global_mask_expanded + (1 - gate) * local_mask  # (B, C, H, W)
+
+        # ── 原版 MAM 的混合逻辑，mask 换成融合后的 ──────────
+        x_out = x * final_mask + self.IN(x) * (1 - final_mask)
+
+        return x_out
 
 def cross_modality_hallucination(feat_sh, feat_sp, labels, sub, lam=0.25):
     """
@@ -399,7 +473,6 @@ class special_att(nn.Module):
 def gem(x, p=3, eps=1e-6):
     return F.avg_pool2d(x.clamp(min=eps).pow(p), (x.size(-2), x.size(-1))).pow(1. / p)
 
-
 class embed_net(nn.Module):
     def __init__(self, drop_last_stride):
         super(embed_net, self).__init__()
@@ -416,63 +489,26 @@ class embed_net(nn.Module):
         self.V_bh = Special_module_bh(drop_last_stride=drop_last_stride)
         self.I_bh = Special_module_bh(drop_last_stride=drop_last_stride)
         self.mum = MUMModule(in_channels=1024)
+        self.IN2 = nn.InstanceNorm2d(512, track_running_stats=False)
+        self.IN3 = nn.InstanceNorm2d(1024, track_running_stats=False)
+        self.IN4 = nn.InstanceNorm2d(2048, track_running_stats=False)
+        self.mam3 = GGMAM(1024)
+        self.mam4 = GGMAM(2048)
 
-    def forward(self, x, sub ,labels):
-        batch_size = x.size(0)
-        x2 = self.shared_module_fr(x)  # (B, 512, H, W)
+    def forward(self, x, sub, labels):
+        x2 = self.shared_module_fr(x)
 
-        # 检查模态存在性
-        has_visible = (sub == 0).any()
-        has_infrared = (sub == 1).any()
-        alpha = torch.sigmoid(self.alpha)
-        # ===== 跨模态CBAM融合 =====
-        if has_visible and has_infrared:
-            # 情况1:双模态都存在 -> 跨模态融合
-            x_v = x2[sub == 0]
-            x_i = x2[sub == 1]
-            v_ca, v_sa = self.v_cbam(x_v)
-            i_ca, i_sa = self.i_cbam(x_i)
-            # 应用自身注意力
-            x_v = x_v * v_ca * v_sa
-            x_i = x_i * i_ca * i_sa
-            # 跨模态互补增强
-            out_v = x_v + alpha * x_v * i_ca * i_sa
-            out_i = x_i + alpha * x_i * v_ca * v_sa
-            # 重组
-            x2_new = torch.zeros_like(x2)
-            x2_new[sub == 0] = out_v
-            x2_new[sub == 1] = out_i
-            x2 = x2_new
-
-        elif has_visible:
-            # 情况2:只有可见光 -> 只用自己的CBAM
-            x_v = x2[sub == 0]
-            v_ca, v_sa = self.v_cbam(x_v)
-            x2[sub == 0] = x_v * v_ca * v_sa
-
-        elif has_infrared:
-            # 情况3:只有红外 -> 只用自己的CBAM
-            x_i = x2[sub == 1]
-            i_ca, i_sa = self.i_cbam(x_i)
-            x2[sub == 1] = x_i * i_ca * i_sa
-
-        # 共享分支
-        # x_sh3, x_sh4 = self.shared_module_bh(x2)
         x_sh3 = self.shared_module_bh.model_sh_bh.layer3(x2)
-        m_sh, m_sp, p_mod = self.mum(x_sh3)
-        f_sh = x_sh3 * m_sh
-        f_sp = x_sh3 * m_sp
-        # x_sh3 = self.adp_global(x_sh3)  # 全局上下文
-        if self.training:
-            f_hallu, _ = cross_modality_hallucination(f_sh, f_sp, labels, sub)
-            x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_hallu)
-        else:
-            x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_sh)
-        # 池化得到最终共享特征
-        sh_pl = gem(x_sh4).squeeze()
-        sh_pl = sh_pl.view(sh_pl.size(0), -1)
+        x_sh3 = self.mam3(x_sh3)
+        x_sh4 = self.shared_module_bh.model_sh_bh.layer4(x_sh3)
+        x_sh4 = self.mam4(x_sh4)
 
-        return sh_pl, alpha, f_sh, f_sp
+        # 共享特征池化
+        sh_pl = gem(x_sh4).squeeze()
+        sh_pl = sh_pl.view(sh_pl.size(0), -1)  # (B, 2048)
+
+        # 返回 sh_proj 用于正交损失，而不是 sh_pl
+        return sh_pl
 
 
 def _resnet(arch, block, layers, pretrained, progress, **kwargs):
