@@ -555,10 +555,10 @@ class embed_net(nn.Module):
         if self.training:
             f_hallu, _ = cross_modality_hallucination(f_sh, f_sp, labels, sub)
             x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_hallu)
-            x_sh4 = self.mam4(x_sh4)
+            # x_sh4 = self.mam4(x_sh4)
         else:
             x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_sh)
-            x_sh4 = self.mam4(x_sh4)
+            # x_sh4 = self.mam4(x_sh4)
         # 共享特征池化
         sh_pl = gem(x_sh4).squeeze()
         sh_pl = sh_pl.view(sh_pl.size(0), -1)  # (B, 2048)
