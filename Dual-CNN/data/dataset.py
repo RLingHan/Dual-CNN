@@ -20,7 +20,7 @@ __getitem__(self, index)：根据给定的索引 index 返回单个样本（例�
 '''
 class SYSUDataset(Dataset):
     #构造函数
-    def __init__(self, root, mode='train', transform=None) :
+    def __init__(self, root, mode='train', transform=None,transform_thermal=None) :
         assert os.path.isdir(root)
         assert mode in ['train', 'gallery', 'query']
 
@@ -60,6 +60,7 @@ class SYSUDataset(Dataset):
         self.cam_ids = [int(path.split('/')[-3][-1]) for path in img_paths]#图像对应的摄像头标号
         self.num_ids = num_ids #选中身份的数量
         self.transform = transform
+        self.transform_thermal = transform_thermal
 
         if mode == 'train':
             #range(num_ids) 生成一个从 0 开始，到 num_ids - 1 结束的连续整数序列
@@ -77,8 +78,15 @@ class SYSUDataset(Dataset):
     def __getitem__(self, item):
         path = self.img_paths[item]
         img = Image.open(path)
-        if self.transform is not None:
+
+        cam = self.cam_ids[item]
+        # 根据模态选择不同transform
+        if self.transform_thermal is not None and cam in (3, 6):
+            # 红外图像用thermal transform
+            img = self.transform_thermal(img)
+        elif self.transform is not None:
             img = self.transform(img)
+
         #转化为 torch.long 是为了满足 PyTorch 损失函数 和 网络层 对输入标签和索引的数据类型要求
         label = torch.tensor(self.ids[item], dtype=torch.long)
         cam = torch.tensor(self.cam_ids[item], dtype=torch.long)
@@ -87,7 +95,7 @@ class SYSUDataset(Dataset):
         return img, label, cam, path, item
 
 class RegDBDataset(Dataset):
-    def __init__(self, root, mode='train', transform=None):
+    def __init__(self, root, mode='train', transform=None, transform_thermal=None):
         assert os.path.isdir(root)
         assert mode in ['train', 'gallery', 'query']
 
@@ -126,6 +134,7 @@ class RegDBDataset(Dataset):
         # to simplify the code, visible cam is 2 and thermal cam is 3 in regdb
         self.num_ids = num_ids
         self.transform = transform
+        self.transform_thermal = transform_thermal
 
         if mode == 'train':
             id_map = dict(zip(selected_ids, range(num_ids)))
@@ -139,7 +148,12 @@ class RegDBDataset(Dataset):
     def __getitem__(self, item):
         path = self.img_paths[item]
         img = Image.open(path)
-        if self.transform is not None:
+
+        cam = self.cam_ids[item]
+
+        if self.transform_thermal is not None and cam == 3:
+            img = self.transform_thermal(img)
+        elif self.transform is not None:
             img = self.transform(img)
 
         label = torch.tensor(self.ids[item], dtype=torch.long)
