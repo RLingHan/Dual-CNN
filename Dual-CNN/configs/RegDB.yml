@@ -51,7 +51,7 @@ lr_step: [50, 80]
 # augmentation
 random_flip: true
 random_crop: true
-random_erase: false
+random_erase: true
 color_jitter: false
 padding: 10
 
