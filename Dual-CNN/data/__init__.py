@@ -35,6 +35,20 @@ def collate_fn(batch):  # img, label, cam_id, img_path, img_id
 #根据输入的配置参数，构建并返回一个可直接用于模型训练的DataLoader
 def get_train_loader(dataset, root, sample_method, batch_size, p_size, k_size, image_size, random_flip=False, random_crop=False,
                      random_erase=False, color_jitter=False, padding=0, num_workers=4):
+
+    t = [T.Resize(image_size)]
+    if random_flip:
+        t.append(T.RandomHorizontalFlip())
+    if color_jitter:
+        t.append(T.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0))
+    if random_crop:  # t.extend(...): 表示调用列表t的扩展方法
+        t.extend([T.Pad(padding, fill=127), T.RandomCrop(image_size)])
+    t.extend([T.ToTensor(), T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+    if random_erase:
+        t.append(T.RandomErasing())
+
+    transform = T.Compose(t)
+
     # ── 可见光 transform（含通道增强）──────────────────────
     # 可见光：CRE + CA，不加GA
     t_color = [T.Resize(image_size)]
@@ -73,8 +87,8 @@ def get_train_loader(dataset, root, sample_method, batch_size, p_size, k_size, i
                                     transform_thermal=transform_thermal)
     elif dataset == 'regdb':
         train_dataset = RegDBDataset(root, mode='train',
-                                     transform=transform_color,
-                                     transform_thermal=transform_thermal)
+                                     transform=transform,
+                                     transform_thermal=transform)
     elif dataset == 'llcm':
         train_dataset = LLCMData(root, mode='train', transform=transform_color)
     elif dataset == 'market':
