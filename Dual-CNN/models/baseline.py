@@ -269,7 +269,8 @@ class Baseline(nn.Module):
         if self.center_loss:
             self.center_loss = CenterLoss(num_classes, self.base_dim + self.dim * self.part_num)
 
-        self.private_classifier = nn.Linear(512, num_classes)
+        self.D_shared_pseu = Discrimination()  # 伪模态分类器（共享特征分支）
+        self.special_D = convDiscrimination(1024)
 
     def forward(self, inputs, labels=None, **kwargs):
 
