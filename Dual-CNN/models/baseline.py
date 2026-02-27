@@ -260,6 +260,7 @@ class Baseline(nn.Module):
         self.classifier = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False)
         if self.classification:
             self.id_loss = nn.CrossEntropyLoss(label_smoothing=0.1,ignore_index=-1)
+            self.sp_id_loss = nn.CrossEntropyLoss(ignore_index=-1)
         if self.triplet:
             self.triplet_loss = TripletLoss(margin=self.margin)
             self.rerank_loss = RerankLoss(margin=0.7)
@@ -310,7 +311,7 @@ class Baseline(nn.Module):
         t_sub = sub.long()
 
         sp_logits = self.special_D(f_sp)  # F_sh
-        sp_loss = self.id_loss(sp_logits.float(), t_sub)  # 鼓励判别器识别不出sh
+        sp_loss = self.sp_id_loss(sp_logits.float(), t_sub)  # 鼓励判别器识别不出sh
         loss += sp_loss
         metric.update({'sp_loss': sp_loss.data})
 
