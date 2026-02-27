@@ -109,7 +109,7 @@ class GGMAM(nn.Module):
 
         return x_out
 
-def cross_modality_hallucination(feat_sh, feat_sp, labels, sub, lam=0.25):
+def cross_modality_hallucination(feat_sh, feat_sp, labels, sub, lam=0.3):
     """
     feat_sh: [B, C, H, W] 共享特征
     feat_sp: [B, C, H, W] 特有特征
@@ -513,18 +513,58 @@ class embed_net(nn.Module):
         x = self.shared_module_fr(x)
         # x1 = self.ibn1(x)
         x2 = self.shared_module_fr.model_sh_fr.layer2(x)
+        # 检查模态存在性
+        has_visible = (sub == 0).any()
+        has_infrared = (sub == 1).any()
+        alpha = torch.sigmoid(self.alpha)
+        # ===== 跨模态CBAM融合 =====
+        if has_visible and has_infrared:
+            # 情况1:双模态都存在 -> 跨模态融合
+            x_v = x2[sub == 0]
+            x_i = x2[sub == 1]
+            v_ca, v_sa = self.v_cbam(x_v)
+            i_ca, i_sa = self.i_cbam(x_i)
+            # 应用自身注意力
+            x_v = x_v * v_ca * v_sa
+            x_i = x_i * i_ca * i_sa
+            # 跨模态互补增强
+            out_v = x_v + alpha * x_v * i_ca * i_sa
+            out_i = x_i + alpha * x_i * v_ca * v_sa
+            # 重组
+            x2_new = torch.zeros_like(x2)
+            x2_new[sub == 0] = out_v
+            x2_new[sub == 1] = out_i
+            x2 = x2_new
 
+        elif has_visible:
+            # 情况2:只有可见光 -> 只用自己的CBAM
+            x_v = x2[sub == 0]
+            v_ca, v_sa = self.v_cbam(x_v)
+            x2[sub == 0] = x_v * v_ca * v_sa
+
+        elif has_infrared:
+            # 情况3:只有红外 -> 只用自己的CBAM
+            x_i = x2[sub == 1]
+            i_ca, i_sa = self.i_cbam(x_i)
+            x2[sub == 1] = x_i * i_ca * i_sa
         x_sh3 = self.shared_module_bh.model_sh_bh.layer3(x2)
         # x_sh3 = self.mam3(x_sh3)
-        x_sh4 = self.shared_module_bh.model_sh_bh.layer4(x_sh3)
-        x_sh4 = self.mam4(x_sh4)
-
+        m_sh, m_sp, p_mod = self.mum(x_sh3)
+        f_sh = x_sh3 * m_sh
+        f_sp = x_sh3 * m_sp
+        if self.training:
+            f_hallu, _ = cross_modality_hallucination(f_sh, f_sp, labels, sub)
+            x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_hallu)
+            x_sh4 = self.mam4(x_sh4)
+        else:
+            x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_sh)
+            x_sh4 = self.mam4(x_sh4)
         # 共享特征池化
         sh_pl = gem(x_sh4).squeeze()
         sh_pl = sh_pl.view(sh_pl.size(0), -1)  # (B, 2048)
 
         # 返回 sh_proj 用于正交损失，而不是 sh_pl
-        return sh_pl
+        return sh_pl, alpha, f_sh, f_sp
 
 
 def _resnet(arch, block, layers, pretrained, progress, **kwargs):

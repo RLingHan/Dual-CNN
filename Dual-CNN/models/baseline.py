@@ -278,7 +278,7 @@ class Baseline(nn.Module):
         #epoch = kwargs.get('epoch')
         # CNN
         #layer4输出  layer4的语义特征  相互调节后的语义特征 mask前/后模态无关特征 mask前/后特别特征
-        sh_pl = self.backbone(inputs,sub=sub,labels=labels)
+        sh_pl, alpha, f_sh, f_sp = self.backbone(inputs,sub=sub,labels=labels)
         #提取特征
 
         feats = sh_pl #layer4的语义输出
@@ -296,14 +296,22 @@ class Baseline(nn.Module):
                 return feats
 
         else:
-            return self.train_forward(feats,labels,sub, **kwargs)
+            return self.train_forward(feats,alpha, f_sh, f_sp, labels,sub, **kwargs)
 
 
 
-    def train_forward(self, feat,labels,sub, **kwargs):
+    def train_forward(self, feat,alpha, f_sh, f_sp,labels,sub, **kwargs):
         epoch = kwargs.get('epoch')
         metric = {}
         loss = 0
+
+        metric.update({'alpha': alpha.data})
+        t_sub = sub.long()
+
+        sp_logits = self.special_D(f_sp)  # F_sh
+        sp_loss = self.id_loss(sp_logits.float(), t_sub)  # 鼓励判别器识别不出sh
+        loss += sp_loss
+        metric.update({'sp_loss': sp_loss.data})
 
         if self.triplet:
 
@@ -359,6 +367,14 @@ class Baseline(nn.Module):
             metric.update({'f_dt': fb_loss.data})
 
         feat = self.bn_neck(feat)
+
+        sub_nb = sub + 0
+        pseu_sh_logits = self.D_shared_pseu(feat)  # F_sh
+        p_sub = sub_nb.chunk(2)[0].repeat_interleave(2)  # 构造标签
+        pp_sub = torch.roll(p_sub, -1)  # 反转标签
+        pseu_loss = self.id_loss(pseu_sh_logits.float(), pp_sub)  # 鼓励判别器识别不出sh
+        loss += pseu_loss
+        metric.update({'pseudo_loss': pseu_loss.data})
 
 
         if self.classification:
