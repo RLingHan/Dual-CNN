@@ -383,12 +383,12 @@ class Baseline(nn.Module):
             logits = self.classifier(feat)
             if self.CSA1:
                 _, intra_bg = Bg_kl(logits[sub == 0], logits[sub == 1])  # 共享和红外对齐
-                bg_loss = intra_bg * 0.5
+                bg_loss = intra_bg
                 loss += bg_loss
                 metric.update({'bg_kl': bg_loss.data})
             if self.CSA2:
                 _, intra_Sm = Sm_kl(logits[sub == 0], logits[sub == 1], labels)  # 模态互相学习
-                sm_kl_loss = intra_Sm * 0.5
+                sm_kl_loss = intra_Sm
                 loss += sm_kl_loss
                 metric.update({'sm_kl': sm_kl_loss.data})
 
