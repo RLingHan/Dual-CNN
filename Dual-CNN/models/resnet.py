@@ -21,6 +21,19 @@ model_urls = {
     'resnext101_32x8d': 'https://download.pytorch.org/models/resnext101_32x8d-8ba56ff5.pth',
 }
 
+class IBN(nn.Module):
+    def __init__(self, channels):
+        super(IBN, self).__init__()
+        half = channels // 2
+        self.IN = nn.InstanceNorm2d(half, affine=True)
+        self.BN = nn.BatchNorm2d(half)
+
+    def forward(self, x):
+        half = x.size(1) // 2
+        x_in = self.IN(x[:, :half, :, :])
+        x_bn = self.BN(x[:, half:, :, :])
+        return torch.cat([x_in, x_bn], dim=1)
+
 class GGMAM(nn.Module):
     """
     改进的 MAM 模块：
@@ -387,7 +400,7 @@ class Shared_module_fr(nn.Module):
         x = self.model_sh_fr.relu(x)
         x = self.model_sh_fr.maxpool(x)
         x = self.model_sh_fr.layer1(x)
-        x = self.model_sh_fr.layer2(x)
+        # x = self.model_sh_fr.layer2(x)
         return x
 
 class Special_module(nn.Module):
@@ -494,14 +507,16 @@ class embed_net(nn.Module):
         self.IN4 = nn.InstanceNorm2d(2048, track_running_stats=False)
         self.mam3 = GGMAM(1024)
         self.mam4 = GGMAM(2048)
+        self.ibn1 = IBN(256)
 
     def forward(self, x, sub, labels):
-        x2 = self.shared_module_fr(x)
-
+        x = self.shared_module_fr(x)
+        # x1 = self.ibn1(x)
+        x2 = self.shared_module_fr.model_sh_fr.layer2(x)
         x_sh3 = self.shared_module_bh.model_sh_bh.layer3(x2)
-        x_sh3 = self.mam3(x_sh3)
+        # x_sh3 = self.mam3(x_sh3)
         x_sh4 = self.shared_module_bh.model_sh_bh.layer4(x_sh3)
-        x_sh4 = self.mam4(x_sh4)
+        # x_sh4 = self.mam4(x_sh4)
 
         # 共享特征池化
         sh_pl = gem(x_sh4).squeeze()
