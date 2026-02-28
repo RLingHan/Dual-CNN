@@ -7,6 +7,7 @@ import torch
 import math
 from layers.module.CBAM import cbam
 from models.channel import AdaptiveGlobalModule, MUMModule, MDIA
+from models.skipk import MultiGranularitySkip
 
 __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
            'resnet152', 'resnext50_32x4d', 'resnext101_32x8d']
@@ -509,6 +510,12 @@ class embed_net(nn.Module):
         # self.mam4 = GGMAM(2048)
         # self.ibn1 = IBN(256)
         self.mdia = MDIA(in_channels=1024, fixed_lam=0.3)
+        self.mg_skip = MultiGranularitySkip(
+            x2_channels=512,
+            fsh_channels=1024,
+            out_channels=2048,
+            inner_dim=256  # 加上这个，默认值虽然也是256，但显式写更清晰
+        )
 
     def forward(self, x, sub, labels):
         x2 = self.shared_module_fr(x)
@@ -554,6 +561,9 @@ class embed_net(nn.Module):
         # f_sp = x_sh3 * m_sp
         f_out, f_sp, modal_logits, lam = self.mdia(x_sh3, sub, labels)
         x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_out)
+
+        x_sh4, gates = self.mg_skip(x2, f_out, x_sh4, sub)
+
         # 共享特征池化
         sh_pl = gem(x_sh4).squeeze()
         sh_pl = sh_pl.view(sh_pl.size(0), -1)  # (B, 2048)
@@ -561,7 +571,7 @@ class embed_net(nn.Module):
         # 返回 sh_proj 用于正交损失，而不是 sh_pl
         # return sh_pl, alpha, f_sh, f_sp
 
-        return sh_pl,f_sp,modal_logits,lam
+        return sh_pl,f_sp,modal_logits,gates
 
 
 def _resnet(arch, block, layers, pretrained, progress, **kwargs):
