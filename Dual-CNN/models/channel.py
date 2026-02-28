@@ -39,15 +39,20 @@ class MUMModule(nn.Module):
 
         return mask_sh, mask_sp, P
 
-
 class MDIA(nn.Module):
     """
     Modal Disentanglement and Interaction Adapter
     三位一体：分离 + 交互对齐 + 自适应幻觉增强
     """
 
-    def __init__(self, in_channels=1024, modal_classes=2):
+    def __init__(self, in_channels=1024, modal_classes=2, fixed_lam=None):
+        """
+        fixed_lam: float 或 None
+            - None:    自适应模式，λ 由网络动态预测（默认）
+            - 0.0~1.0: 固定模式，强制使用指定的 λ 值，跳过 lambda_predictor
+        """
         super().__init__()
+        self.fixed_lam = fixed_lam
 
         # ── 1. Disentangle 分支 ──────────────────────────────
         self.modal_discriminator = nn.Sequential(
@@ -69,63 +74,53 @@ class MDIA(nn.Module):
         self.interact_norm = nn.GroupNorm(32, in_channels)
 
         # ── 3. Adaptive Hallucination ────────────────────────
-        # 输入是两个 GAP 特征拼接 (B, in_channels*2)，不含池化层
-        self.lambda_predictor = nn.Sequential(
-            nn.Linear(in_channels * 2, 64),
-            nn.ReLU(inplace=True),
-            nn.Linear(64, 1),
-            nn.Sigmoid()  # λ ∈ (0, 1)
-        )
+        # fixed_lam=None 时才构建，输入 (B, in_channels*2)
+        if self.fixed_lam is None:
+            self.lambda_predictor = nn.Sequential(
+                nn.Linear(in_channels * 2, 64),
+                nn.ReLU(inplace=True),
+                nn.Linear(64, 1),
+                nn.Sigmoid()  # λ ∈ (0, 1)
+            )
 
         self.out_norm = nn.GroupNorm(32, in_channels)
         self.gamma = nn.Parameter(torch.zeros(1))
 
     def disentangle(self, x):
-        """返回共享特征、特有特征、以及用于有监督的modal_feat"""
-        P = self.modal_discriminator(x)          # (B, C)，已经过池化+flatten
-        modal_feat = P                            # 用于 modal_cls_head
+        P = self.modal_discriminator(x)          # (B, C)
+        modal_feat = P
         P = P.view(P.size(0), P.size(1), 1, 1)  # (B, C, 1, 1)
-        mask_sh = 1 - torch.abs(2 * P - 1)       # 三角波，0.5处最大
-        mask_sp = torch.abs(2 * P - 1)           # 两端最大
+        mask_sh = 1 - torch.abs(2 * P - 1)
+        mask_sp = torch.abs(2 * P - 1)
         f_sh = x * mask_sh
         f_sp = x * mask_sp
         return f_sh, f_sp, modal_feat
 
     def cross_interact(self, f_sh, sub):
-        """
-        跨模态共享特征交互对齐
-        只在双模态都存在时做，否则走 identity
-        """
         has_v = (sub == 0).any()
         has_i = (sub == 1).any()
 
         if not (has_v and has_i):
             return f_sh
 
-        f_v = f_sh[sub == 0]  # (Bv, C, H, W)
-        f_i = f_sh[sub == 1]  # (Bi, C, H, W)
+        f_v = f_sh[sub == 0]
+        f_i = f_sh[sub == 1]
 
         def attend(query_feat, kv_feat):
             dtype = query_feat.dtype
             B, C, H, W = query_feat.shape
-
-            q = self.q_proj(query_feat)                                   # (B, C/4, H, W)
-            k = self.k_proj(kv_feat.mean(0, keepdim=True).expand_as(kv_feat))  # (B, C/4, H, W)
-            v = self.v_proj(kv_feat.mean(0, keepdim=True).expand_as(kv_feat))  # (B, C, H, W)
-
-            q_flat = q.flatten(2)                                          # (B, C/4, HW)
-            k_flat = k.flatten(2).mean(0, keepdim=True).expand(B, -1, -1) # (B, C/4, HW)
-            v_flat = v.flatten(2).mean(0, keepdim=True).expand(B, -1, -1) # (B, C, HW)
-
+            q = self.q_proj(query_feat)
+            k = self.k_proj(kv_feat.mean(0, keepdim=True).expand_as(kv_feat))
+            v = self.v_proj(kv_feat.mean(0, keepdim=True).expand_as(kv_feat))
+            q_flat = q.flatten(2)                                           # (B, C/4, HW)
+            k_flat = k.flatten(2).mean(0, keepdim=True).expand(B, -1, -1)  # (B, C/4, HW)
+            v_flat = v.flatten(2).mean(0, keepdim=True).expand(B, -1, -1)  # (B, C, HW)
             scale = (C // 4) ** 0.5
             attn = torch.softmax(
-                torch.bmm(q_flat.transpose(1, 2), k_flat) / scale,
-                dim=-1
+                torch.bmm(q_flat.transpose(1, 2), k_flat) / scale, dim=-1
             )  # (B, HW, HW)
-
-            out = torch.bmm(v_flat, attn.transpose(1, 2))  # (B, C, HW)
+            out = torch.bmm(v_flat, attn.transpose(1, 2))
             out = out.view(B, C, H, W).to(dtype)
-
             return query_feat + self.gamma * self.interact_norm(out).to(dtype)
 
         out_v = attend(f_v, f_i)
@@ -137,24 +132,29 @@ class MDIA(nn.Module):
         return f_sh_new
 
     def adaptive_hallucination(self, f_sh, f_sp, labels, sub):
-        """自适应幻觉注入：λ 由模态差异动态预测"""
         B = f_sh.size(0)
         device = f_sh.device
 
         # 找跨模态、不同ID的负样本特有特征
-        sub_diff   = sub.unsqueeze(1) != sub.unsqueeze(0)      # (B, B)
+        sub_diff   = sub.unsqueeze(1) != sub.unsqueeze(0)
         label_diff = labels.unsqueeze(1) != labels.unsqueeze(0)
         valid = (sub_diff & label_diff).float()
+        rand_w = torch.rand(B, B, device=device) * valid
+        selected = rand_w.argmax(1)
+        f_sp_cross = f_sp[selected]  # (B, C, H, W)
 
-        rand_w  = torch.rand(B, B, device=device) * valid
-        selected = rand_w.argmax(1)                             # (B,)
-        f_sp_cross = f_sp[selected]                             # (B, C, H, W)
-
-        # GAP 后拼接，输入 lambda_predictor
-        sh_gap = F.adaptive_avg_pool2d(f_sh, 1).flatten(1).float()       # (B, C)
-        sp_gap = F.adaptive_avg_pool2d(f_sp_cross, 1).flatten(1).float() # (B, C)
-        lam = self.lambda_predictor(torch.cat([sh_gap, sp_gap], dim=1))  # (B, 1)
-        lam = lam.to(f_sh.dtype).view(B, 1, 1, 1)
+        # 计算 λ
+        if self.fixed_lam is not None:
+            # 固定模式：直接用指定值
+            lam = torch.full((B, 1, 1, 1), self.fixed_lam,
+                             dtype=f_sh.dtype, device=device)
+        else:
+            # 自适应模式：由网络预测
+            sh_gap = F.adaptive_avg_pool2d(f_sh, 1).flatten(1).float()        # (B, C)
+            sp_gap = F.adaptive_avg_pool2d(f_sp_cross, 1).flatten(1).float()  # (B, C)
+            lam = self.lambda_predictor(
+                torch.cat([sh_gap, sp_gap], dim=1))   # (B, 1)
+            lam = lam.to(f_sh.dtype).view(B, 1, 1, 1)
 
         f_hallu = f_sh + lam * f_sp_cross
         return f_hallu, lam.squeeze()
@@ -172,55 +172,6 @@ class MDIA(nn.Module):
             # 3. Adaptive Hallucination
             f_out, lam = self.adaptive_hallucination(f_sh, f_sp, labels, sub)
         else:
-            # 测试时只用对齐后的共享特征
-            f_out = f_sh
-            lam = None
-
-        return f_out, f_sp, modal_logits, lam
-
-
-    def adaptive_hallucination(self, f_sh, f_sp, labels, sub):
-        """
-        自适应幻觉注入：λ 由模态差异动态预测
-        """
-        B = f_sh.size(0)
-        device = f_sh.device
-
-        # 找跨模态、不同ID的负样本特有特征
-        sub_diff = sub.unsqueeze(1) != sub.unsqueeze(0)  # (B, B)
-        label_diff = labels.unsqueeze(1) != labels.unsqueeze(0)
-        valid = (sub_diff & label_diff).float()
-
-        rand_w = torch.rand(B, B, device=device) * valid
-        row_sum = rand_w.sum(1, keepdim=True).clamp(min=1e-8)
-        selected = rand_w.argmax(1)  # (B,)
-        f_sp_cross = f_sp[selected]  # (B, C, H, W)
-
-        # 动态预测 λ：输入是共享特征和跨模态特有特征的拼接
-        sh_gap = F.adaptive_avg_pool2d(f_sh, 1).flatten(1)  # (B, C)
-        sp_gap = F.adaptive_avg_pool2d(f_sp_cross, 1).flatten(1)
-        lam = self.lambda_predictor(
-            torch.cat([sh_gap, sp_gap], dim=1))  # (B, 1)
-        lam = lam.view(B, 1, 1, 1)  # broadcast
-
-        f_hallu = f_sh + lam * f_sp_cross
-        return f_hallu, lam.squeeze()
-
-    def forward(self, x, sub, labels=None):
-        # 1. Disentangle
-        f_sh, f_sp, modal_feat = self.disentangle(x)
-
-        # 有监督模态分类（训练时返回logits用于计算loss）
-        modal_logits = self.modal_cls_head(modal_feat)  # (B, 2)
-
-        if self.training and labels is not None:
-            # 2. Cross-Modal Interaction
-            f_sh = self.cross_interact(f_sh, sub)
-
-            # 3. Adaptive Hallucination
-            f_out, lam = self.adaptive_hallucination(f_sh, f_sp, labels, sub)
-        else:
-            # 测试时：只用对齐后的共享特征，不注入噪声
             f_out = f_sh
             lam = None
 
