@@ -207,6 +207,7 @@ def modal_centroid_loss(F1, F2, labels, modalities, margin):
     return losses.mean()
 
 
+
 def orthogonal_loss(sh_pl, pr_pl):
     # sh_pl: (B, 2048)  pr_pl: (B, 512)
     sh_norm = F.normalize(sh_pl, dim=0)  # 按batch维归一化，(B, 2048)
@@ -280,7 +281,7 @@ class Baseline(nn.Module):
         #epoch = kwargs.get('epoch')
         # CNN
         #layer4输出  layer4的语义特征  相互调节后的语义特征 mask前/后模态无关特征 mask前/后特别特征
-        sh_pl, alpha, f_sh, f_sp = self.backbone(inputs,sub=sub,labels=labels)
+        sh_pl,f_sp,modal_logits,lam = self.backbone(inputs,sub=sub,labels=labels)
         #提取特征
 
         feats = sh_pl #layer4的语义输出
@@ -298,23 +299,26 @@ class Baseline(nn.Module):
                 return feats
 
         else:
-            return self.train_forward(feats,alpha, f_sh, f_sp, labels,sub, **kwargs)
+            return self.train_forward(feats,f_sp,modal_logits,lam, labels,sub, **kwargs)
 
 
 
-    def train_forward(self, feat,alpha, f_sh, f_sp,labels,sub, **kwargs):
+    def train_forward(self, feat,f_sp,modal_logits,lam,labels,sub, **kwargs):
         epoch = kwargs.get('epoch')
         metric = {}
         loss = 0
 
-        metric.update({'alpha': alpha.data})
-        t_sub = sub.long()
-        sub_nb = t_sub
+        modal_loss = F.cross_entropy(modal_logits, sub.long())
+        loss += 0.1 * modal_loss
+        metric.update({'modal': modal_loss.data})
+        
         # sp_logits = self.special_D(f_sp)  # F_sh
         # sp_loss = self.sp_id_loss(sp_logits.float(), t_sub)  # 鼓励判别器识别不出sh
         # loss += sp_loss
         # metric.update({'sp_loss': sp_loss.data})
+        metric.update({'lam': lam.mean().data})
 
+        sub_nb = sub.long()
         pseu_sh_logits = self.D_shared_pseu(feat) #F_sh
         p_sub = sub_nb.chunk(2)[0].repeat_interleave(2) #构造标签
         pp_sub = torch.roll(p_sub, -1) #反转标签

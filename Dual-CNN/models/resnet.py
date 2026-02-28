@@ -6,7 +6,7 @@ from torch.hub import load_state_dict_from_url
 import torch
 import math
 from layers.module.CBAM import cbam
-from models.channel import AdaptiveGlobalModule, MUMModule
+from models.channel import AdaptiveGlobalModule, MUMModule, MDIA
 
 __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
            'resnet152', 'resnext50_32x4d', 'resnext101_32x8d']
@@ -502,63 +502,58 @@ class embed_net(nn.Module):
         self.V_bh = Special_module_bh(drop_last_stride=drop_last_stride)
         self.I_bh = Special_module_bh(drop_last_stride=drop_last_stride)
         self.mum = MUMModule(in_channels=1024)
-        self.IN2 = nn.InstanceNorm2d(512, track_running_stats=False)
-        self.IN3 = nn.InstanceNorm2d(1024, track_running_stats=False)
-        self.IN4 = nn.InstanceNorm2d(2048, track_running_stats=False)
-        self.mam3 = GGMAM(1024)
-        self.mam4 = GGMAM(2048)
-        self.ibn1 = IBN(256)
+        # self.IN2 = nn.InstanceNorm2d(512, track_running_stats=False)
+        # self.IN3 = nn.InstanceNorm2d(1024, track_running_stats=False)
+        # self.IN4 = nn.InstanceNorm2d(2048, track_running_stats=False)
+        # self.mam3 = GGMAM(1024)
+        # self.mam4 = GGMAM(2048)
+        # self.ibn1 = IBN(256)
+        self.mdia = MDIA(in_channels=1024)
 
     def forward(self, x, sub, labels):
         x2 = self.shared_module_fr(x)
 
         # 检查模态存在性
-        has_visible = (sub == 0).any()
-        has_infrared = (sub == 1).any()
-        alpha = torch.sigmoid(self.alpha)
+        # has_visible = (sub == 0).any()
+        # has_infrared = (sub == 1).any()
+        # alpha = torch.sigmoid(self.alpha)
         # ===== 跨模态CBAM融合 =====
-        if has_visible and has_infrared:
-            # 情况1:双模态都存在 -> 跨模态融合
-            x_v = x2[sub == 0]
-            x_i = x2[sub == 1]
-            v_ca, v_sa = self.v_cbam(x_v)
-            i_ca, i_sa = self.i_cbam(x_i)
-            # 应用自身注意力
-            x_v = x_v * v_ca * v_sa
-            x_i = x_i * i_ca * i_sa
-            # 跨模态互补增强
-            out_v = x_v + alpha * x_v * i_ca * i_sa
-            out_i = x_i + alpha * x_i * v_ca * v_sa
-            # 重组
-            x2_new = torch.zeros_like(x2)
-            x2_new[sub == 0] = out_v
-            x2_new[sub == 1] = out_i
-            x2 = x2_new
-
-        elif has_visible:
-            # 情况2:只有可见光 -> 只用自己的CBAM
-            x_v = x2[sub == 0]
-            v_ca, v_sa = self.v_cbam(x_v)
-            x2[sub == 0] = x_v * v_ca * v_sa
-
-        elif has_infrared:
-            # 情况3:只有红外 -> 只用自己的CBAM
-            x_i = x2[sub == 1]
-            i_ca, i_sa = self.i_cbam(x_i)
-            x2[sub == 1] = x_i * i_ca * i_sa
+        # if has_visible and has_infrared:
+        #     # 情况1:双模态都存在 -> 跨模态融合
+        #     x_v = x2[sub == 0]
+        #     x_i = x2[sub == 1]
+        #     v_ca, v_sa = self.v_cbam(x_v)
+        #     i_ca, i_sa = self.i_cbam(x_i)
+        #     # 应用自身注意力
+        #     x_v = x_v * v_ca * v_sa
+        #     x_i = x_i * i_ca * i_sa
+        #     # 跨模态互补增强
+        #     out_v = x_v + alpha * x_v * i_ca * i_sa
+        #     out_i = x_i + alpha * x_i * v_ca * v_sa
+        #     # 重组
+        #     x2_new = torch.zeros_like(x2)
+        #     x2_new[sub == 0] = out_v
+        #     x2_new[sub == 1] = out_i
+        #     x2 = x2_new
+        #
+        # elif has_visible:
+        #     # 情况2:只有可见光 -> 只用自己的CBAM
+        #     x_v = x2[sub == 0]
+        #     v_ca, v_sa = self.v_cbam(x_v)
+        #     x2[sub == 0] = x_v * v_ca * v_sa
+        #
+        # elif has_infrared:
+        #     # 情况3:只有红外 -> 只用自己的CBAM
+        #     x_i = x2[sub == 1]
+        #     i_ca, i_sa = self.i_cbam(x_i)
+        #     x2[sub == 1] = x_i * i_ca * i_sa
         x_sh3 = self.shared_module_bh.model_sh_bh.layer3(x2)
         # x_sh3 = self.mam3(x_sh3)
         # m_sh, m_sp, p_mod = self.mum(x_sh3)
         # f_sh = x_sh3 * m_sh
         # f_sp = x_sh3 * m_sp
-        f_sh = x_sh3
-        if self.training:
-            # f_hallu, _ = cross_modality_hallucination(f_sh, f_sp, labels, sub)
-            # x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_hallu)
-            x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_sh)
-        else:
-            x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_sh)
-            # x_sh4 = self.mam4(x_sh4)
+        f_out, f_sp, modal_logits, lam = self.mdia(x_sh3, sub, labels)
+        x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_out)
         # 共享特征池化
         sh_pl = gem(x_sh4).squeeze()
         sh_pl = sh_pl.view(sh_pl.size(0), -1)  # (B, 2048)
@@ -566,7 +561,7 @@ class embed_net(nn.Module):
         # 返回 sh_proj 用于正交损失，而不是 sh_pl
         # return sh_pl, alpha, f_sh, f_sp
 
-        return sh_pl, alpha, None, None
+        return sh_pl,f_sp,modal_logits,lam
 
 
 def _resnet(arch, block, layers, pretrained, progress, **kwargs):
