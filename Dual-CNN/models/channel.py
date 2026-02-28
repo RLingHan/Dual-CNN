@@ -49,7 +49,7 @@ class MDIA(nn.Module):
     def __init__(self, in_channels=1024, modal_classes=2):
         super().__init__()
 
-        # ── 1. Disentangle 分支（替换 MUMModule）──────────────
+        # ── 1. Disentangle 分支 ──────────────────────────────
         self.modal_discriminator = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
@@ -62,35 +62,31 @@ class MDIA(nn.Module):
         # 有监督辅助分类头（二分类：RGB vs IR）
         self.modal_cls_head = nn.Linear(in_channels, modal_classes)
 
-        # ── 2. Cross-Modal Interaction（替换 CBAM 跨模态部分）─
-        # 轻量：只用 1x1 conv 模拟 cross-attention
+        # ── 2. Cross-Modal Interaction ───────────────────────
         self.q_proj = nn.Conv2d(in_channels, in_channels // 4, 1)
         self.k_proj = nn.Conv2d(in_channels, in_channels // 4, 1)
         self.v_proj = nn.Conv2d(in_channels, in_channels, 1)
         self.interact_norm = nn.GroupNorm(32, in_channels)
 
-        # ── 3. Adaptive Hallucination（替换固定 lam=0.3）──────
-        # 根据模态差异动态预测注入强度
+        # ── 3. Adaptive Hallucination ────────────────────────
+        # 输入是两个 GAP 特征拼接 (B, in_channels*2)，不含池化层
         self.lambda_predictor = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(),
             nn.Linear(in_channels * 2, 64),
             nn.ReLU(inplace=True),
             nn.Linear(64, 1),
             nn.Sigmoid()  # λ ∈ (0, 1)
         )
 
-        # 输出融合
         self.out_norm = nn.GroupNorm(32, in_channels)
-        self.gamma = nn.Parameter(torch.zeros(1))  # 初始不影响主路
+        self.gamma = nn.Parameter(torch.zeros(1))
 
     def disentangle(self, x):
-        """返回共享掩码、特有掩码、以及用于有监督的GAP特征"""
-        P = self.modal_discriminator(x)  # (B, C)
-        modal_feat = P  # 用于modal_cls_head
+        """返回共享特征、特有特征、以及用于有监督的modal_feat"""
+        P = self.modal_discriminator(x)          # (B, C)，已经过池化+flatten
+        modal_feat = P                            # 用于 modal_cls_head
         P = P.view(P.size(0), P.size(1), 1, 1)  # (B, C, 1, 1)
-        mask_sh = 1 - torch.abs(2 * P - 1)  # 三角波，0.5处最大
-        mask_sp = torch.abs(2 * P - 1)  # 两端最大
+        mask_sh = 1 - torch.abs(2 * P - 1)       # 三角波，0.5处最大
+        mask_sp = torch.abs(2 * P - 1)           # 两端最大
         f_sh = x * mask_sh
         f_sp = x * mask_sp
         return f_sh, f_sp, modal_feat
@@ -98,42 +94,90 @@ class MDIA(nn.Module):
     def cross_interact(self, f_sh, sub):
         """
         跨模态共享特征交互对齐
-        只在训练且双模态都存在时做，否则走 identity
+        只在双模态都存在时做，否则走 identity
         """
         has_v = (sub == 0).any()
         has_i = (sub == 1).any()
 
         if not (has_v and has_i):
-            return f_sh  # 单模态直接返回
+            return f_sh
 
         f_v = f_sh[sub == 0]  # (Bv, C, H, W)
         f_i = f_sh[sub == 1]  # (Bi, C, H, W)
 
-        # f_v 以 f_i 为 key/value 做交互（反之亦然）
         def attend(query_feat, kv_feat):
+            dtype = query_feat.dtype
             B, C, H, W = query_feat.shape
-            q = self.q_proj(query_feat)  # (B, C/4, H, W)
-            k = self.k_proj(kv_feat.mean(0, keepdim=True).expand_as(kv_feat))
-            v = self.v_proj(kv_feat.mean(0, keepdim=True).expand_as(kv_feat))
-            # 空间压缩后做点积
-            q_flat = q.flatten(2)  # (B, C/4, HW)
-            k_flat = k.flatten(2).mean(0, keepdim=True)  # (1, C/4, HW)
+
+            q = self.q_proj(query_feat)                                   # (B, C/4, H, W)
+            k = self.k_proj(kv_feat.mean(0, keepdim=True).expand_as(kv_feat))  # (B, C/4, H, W)
+            v = self.v_proj(kv_feat.mean(0, keepdim=True).expand_as(kv_feat))  # (B, C, H, W)
+
+            q_flat = q.flatten(2)                                          # (B, C/4, HW)
+            k_flat = k.flatten(2).mean(0, keepdim=True).expand(B, -1, -1) # (B, C/4, HW)
+            v_flat = v.flatten(2).mean(0, keepdim=True).expand(B, -1, -1) # (B, C, HW)
+
+            scale = (C // 4) ** 0.5
             attn = torch.softmax(
-                torch.bmm(q_flat.transpose(1, 2),
-                          k_flat.expand(B, -1, -1)) / (C // 4) ** 0.5,
-                dim=-1)  # (B, HW, HW)
-            v_flat = v.flatten(2).mean(0, keepdim=True).expand(B, -1, -1)
+                torch.bmm(q_flat.transpose(1, 2), k_flat) / scale,
+                dim=-1
+            )  # (B, HW, HW)
+
             out = torch.bmm(v_flat, attn.transpose(1, 2))  # (B, C, HW)
-            out = out.view(B, C, H, W)
-            return query_feat + self.gamma * self.interact_norm(out)
+            out = out.view(B, C, H, W).to(dtype)
+
+            return query_feat + self.gamma * self.interact_norm(out).to(dtype)
 
         out_v = attend(f_v, f_i)
         out_i = attend(f_i, f_v)
 
         f_sh_new = torch.zeros_like(f_sh)
-        f_sh_new[sub == 0] = out_v.to(f_sh.dtype)  # 加这个
-        f_sh_new[sub == 1] = out_i.to(f_sh.dtype)  # 加这个
+        f_sh_new[sub == 0] = out_v.to(f_sh.dtype)
+        f_sh_new[sub == 1] = out_i.to(f_sh.dtype)
         return f_sh_new
+
+    def adaptive_hallucination(self, f_sh, f_sp, labels, sub):
+        """自适应幻觉注入：λ 由模态差异动态预测"""
+        B = f_sh.size(0)
+        device = f_sh.device
+
+        # 找跨模态、不同ID的负样本特有特征
+        sub_diff   = sub.unsqueeze(1) != sub.unsqueeze(0)      # (B, B)
+        label_diff = labels.unsqueeze(1) != labels.unsqueeze(0)
+        valid = (sub_diff & label_diff).float()
+
+        rand_w  = torch.rand(B, B, device=device) * valid
+        selected = rand_w.argmax(1)                             # (B,)
+        f_sp_cross = f_sp[selected]                             # (B, C, H, W)
+
+        # GAP 后拼接，输入 lambda_predictor
+        sh_gap = F.adaptive_avg_pool2d(f_sh, 1).flatten(1).float()       # (B, C)
+        sp_gap = F.adaptive_avg_pool2d(f_sp_cross, 1).flatten(1).float() # (B, C)
+        lam = self.lambda_predictor(torch.cat([sh_gap, sp_gap], dim=1))  # (B, 1)
+        lam = lam.to(f_sh.dtype).view(B, 1, 1, 1)
+
+        f_hallu = f_sh + lam * f_sp_cross
+        return f_hallu, lam.squeeze()
+
+    def forward(self, x, sub, labels=None):
+        # 1. Disentangle
+        f_sh, f_sp, modal_feat = self.disentangle(x)
+
+        # 有监督模态分类 logits
+        modal_logits = self.modal_cls_head(modal_feat.float())  # (B, 2)
+
+        if self.training and labels is not None:
+            # 2. Cross-Modal Interaction
+            f_sh = self.cross_interact(f_sh, sub)
+            # 3. Adaptive Hallucination
+            f_out, lam = self.adaptive_hallucination(f_sh, f_sp, labels, sub)
+        else:
+            # 测试时只用对齐后的共享特征
+            f_out = f_sh
+            lam = None
+
+        return f_out, f_sp, modal_logits, lam
+
 
     def adaptive_hallucination(self, f_sh, f_sp, labels, sub):
         """
