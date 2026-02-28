@@ -321,19 +321,19 @@ class Baseline(nn.Module):
         metric.update({'lam': lam.mean().data})
 
 
-        pseu_sh_logits = self.D_shared_pseu(feat) #F_sh
-        p_sub = sub_nb.chunk(2)[0].repeat_interleave(2) #构造标签
-        pp_sub = torch.roll(p_sub, -1) #反转标签
-        pseu_loss = self.id_loss(pseu_sh_logits.float(), pp_sub) #鼓励判别器识别不出sh
-        loss += pseu_loss
-        metric.update({'pseudo_loss': pseu_loss.data})
-
-        # pseu_sh_logits = self.special_D(f_sh)  # F_sh
-        # p_sub = sub_nb.chunk(2)[0].repeat_interleave(2)  # 构造标签
-        # pp_sub = torch.roll(p_sub, -1)  # 反转标签
-        # pseu_loss = self.sp_id_loss(pseu_sh_logits.float(), pp_sub)  # 鼓励判别器识别不出sh
+        # pseu_sh_logits = self.D_shared_pseu(feat) #F_sh
+        # p_sub = sub_nb.chunk(2)[0].repeat_interleave(2) #构造标签
+        # pp_sub = torch.roll(p_sub, -1) #反转标签
+        # pseu_loss = self.id_loss(pseu_sh_logits.float(), pp_sub) #鼓励判别器识别不出sh
         # loss += pseu_loss
         # metric.update({'pseudo_loss': pseu_loss.data})
+
+        pseu_sh_logits = self.special_D(f_sh)  # F_sh
+        p_sub = sub_nb.chunk(2)[0].repeat_interleave(2)  # 构造标签
+        pp_sub = torch.roll(p_sub, -1)  # 反转标签
+        pseu_loss = self.sp_id_loss(pseu_sh_logits.float(), pp_sub)  # 鼓励判别器识别不出sh
+        loss += pseu_loss
+        metric.update({'pseudo_loss': pseu_loss.data})
 
         if self.triplet:
 
