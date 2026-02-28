@@ -310,10 +310,10 @@ class Baseline(nn.Module):
         metric.update({'alpha': alpha.data})
         t_sub = sub.long()
 
-        sp_logits = self.special_D(f_sp)  # F_sh
-        sp_loss = self.sp_id_loss(sp_logits.float(), t_sub)  # 鼓励判别器识别不出sh
-        loss += sp_loss
-        metric.update({'sp_loss': sp_loss.data})
+        # sp_logits = self.special_D(f_sp)  # F_sh
+        # sp_loss = self.sp_id_loss(sp_logits.float(), t_sub)  # 鼓励判别器识别不出sh
+        # loss += sp_loss
+        # metric.update({'sp_loss': sp_loss.data})
 
         # pseu_sh_logits = self.D_shared_pseu(feat) #F_sh
         # p_sub = sub_nb.chunk(2)[0].repeat_interleave(2) #构造标签
@@ -392,7 +392,7 @@ class Baseline(nn.Module):
                 metric.update({'bg_kl': bg_loss.data})
             if self.CSA2:
                 _, intra_Sm = Sm_kl(logits[sub == 0], logits[sub == 1], labels)  # 模态互相学习
-                sm_kl_loss = intra_Sm
+                sm_kl_loss = intra_Sm * 0.1
                 loss += sm_kl_loss
                 metric.update({'sm_kl': sm_kl_loss.data})
 
