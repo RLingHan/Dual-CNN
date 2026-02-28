@@ -281,7 +281,7 @@ class Baseline(nn.Module):
         #epoch = kwargs.get('epoch')
         # CNN
         #layer4输出  layer4的语义特征  相互调节后的语义特征 mask前/后模态无关特征 mask前/后特别特征
-        sh_pl,f_sp,modal_logits,gates= self.backbone(inputs,sub=sub,labels=labels)
+        sh_pl,f_sp,modal_logits,lam = self.backbone(inputs,sub=sub,labels=labels)
         #提取特征
 
         feats = sh_pl #layer4的语义输出
@@ -299,29 +299,26 @@ class Baseline(nn.Module):
                 return feats
 
         else:
-            return self.train_forward(feats,f_sp,modal_logits,gates, labels,sub, **kwargs)
+            return self.train_forward(feats,f_sp,modal_logits,lam, labels,sub, **kwargs)
 
 
 
-    def train_forward(self, feat,f_sp,modal_logits,gates,labels,sub, **kwargs):
+    def train_forward(self, feat,f_sp,modal_logits,lam,labels,sub, **kwargs):
         epoch = kwargs.get('epoch')
         metric = {}
         loss = 0
 
         modal_loss = F.cross_entropy(modal_logits, sub.long())
-        loss += 0.15 * modal_loss
+        loss += 0.1 * modal_loss
         metric.update({'modal': modal_loss.data})
-        sub_nb = sub.long()
 
         # sp_logits = self.special_D(f_sp)  # F_sh
-        # sp_loss = self.sp_id_loss(sp_logits.float(), sub_nb)  # 鼓励判别器识别不出sh
+        # sp_loss = self.sp_id_loss(sp_logits.float(), t_sub)  # 鼓励判别器识别不出sh
         # loss += sp_loss
         # metric.update({'sp_loss': sp_loss.data})
+        metric.update({'lam': lam.mean().data})
 
-        metric.update({'gate_x2': gates[:, 0].mean().data,
-                       'gate_fsh': gates[:, 1].mean().data})
-
-
+        sub_nb = sub.long()
         pseu_sh_logits = self.D_shared_pseu(feat) #F_sh
         p_sub = sub_nb.chunk(2)[0].repeat_interleave(2) #构造标签
         pp_sub = torch.roll(p_sub, -1) #反转标签
