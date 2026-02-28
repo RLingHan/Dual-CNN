@@ -309,7 +309,7 @@ class Baseline(nn.Module):
         loss = 0
 
         modal_loss = F.cross_entropy(modal_logits, sub.long())
-        loss += 0.1 * modal_loss
+        loss += modal_loss
         metric.update({'modal': modal_loss.data})
 
         # sp_logits = self.special_D(f_sp)  # F_sh
