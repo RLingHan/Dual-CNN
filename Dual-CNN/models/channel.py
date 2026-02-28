@@ -131,8 +131,8 @@ class MDIA(nn.Module):
         out_i = attend(f_i, f_v)
 
         f_sh_new = torch.zeros_like(f_sh)
-        f_sh_new[sub == 0] = out_v
-        f_sh_new[sub == 1] = out_i
+        f_sh_new[sub == 0] = out_v.to(f_sh.dtype)  # 加这个
+        f_sh_new[sub == 1] = out_i.to(f_sh.dtype)  # 加这个
         return f_sh_new
 
     def adaptive_hallucination(self, f_sh, f_sp, labels, sub):
