@@ -400,7 +400,7 @@ class Shared_module_fr(nn.Module):
         x = self.model_sh_fr.relu(x)
         x = self.model_sh_fr.maxpool(x)
         x = self.model_sh_fr.layer1(x)
-        # x = self.model_sh_fr.layer2(x)
+        x = self.model_sh_fr.layer2(x)
         return x
 
 class Special_module(nn.Module):
@@ -510,9 +510,8 @@ class embed_net(nn.Module):
         self.ibn1 = IBN(256)
 
     def forward(self, x, sub, labels):
-        x = self.shared_module_fr(x)
-        # x1 = self.ibn1(x)
-        x2 = self.shared_module_fr.model_sh_fr.layer2(x)
+        x2 = self.shared_module_fr(x)
+
         # 检查模态存在性
         has_visible = (sub == 0).any()
         has_infrared = (sub == 1).any()
@@ -553,9 +552,9 @@ class embed_net(nn.Module):
         f_sh = x_sh3 * m_sh
         f_sp = x_sh3 * m_sp
         if self.training:
-            f_hallu, _ = cross_modality_hallucination(f_sh, f_sp, labels, sub)
-            x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_hallu)
-            # x_sh4 = self.mam4(x_sh4)
+            # f_hallu, _ = cross_modality_hallucination(f_sh, f_sp, labels, sub)
+            # x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_hallu)
+            x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_sh)
         else:
             x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_sh)
             # x_sh4 = self.mam4(x_sh4)
