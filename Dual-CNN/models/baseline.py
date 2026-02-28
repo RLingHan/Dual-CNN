@@ -308,17 +308,19 @@ class Baseline(nn.Module):
         metric = {}
         loss = 0
 
-        modal_loss = F.cross_entropy(modal_logits, sub.long())
-        loss += 0.2 * modal_loss
-        metric.update({'modal': modal_loss.data})
+        # modal_loss = F.cross_entropy(modal_logits, sub.long())
+        # loss += 0.15 * modal_loss
+        # metric.update({'modal': modal_loss.data})
+        sub_nb = sub.long()
 
-        # sp_logits = self.special_D(f_sp)  # F_sh
-        # sp_loss = self.sp_id_loss(sp_logits.float(), t_sub)  # 鼓励判别器识别不出sh
-        # loss += sp_loss
-        # metric.update({'sp_loss': sp_loss.data})
+        sp_logits = self.special_D(f_sp)  # F_sh
+        sp_loss = self.sp_id_loss(sp_logits.float(), sub_nb)  # 鼓励判别器识别不出sh
+        loss += sp_loss
+        metric.update({'sp_loss': sp_loss.data})
+
         metric.update({'lam': lam.mean().data})
 
-        sub_nb = sub.long()
+
         pseu_sh_logits = self.D_shared_pseu(feat) #F_sh
         p_sub = sub_nb.chunk(2)[0].repeat_interleave(2) #构造标签
         pp_sub = torch.roll(p_sub, -1) #反转标签
