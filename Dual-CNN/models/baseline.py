@@ -259,7 +259,7 @@ class Baseline(nn.Module):
 
         self.classifier = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False)
         if self.classification:
-            self.id_loss = nn.CrossEntropyLoss(label_smoothing=0.1,ignore_index=-1)
+            self.id_loss = nn.CrossEntropyLoss(ignore_index=-1)
             self.sp_id_loss = nn.CrossEntropyLoss(ignore_index=-1)
         if self.triplet:
             self.triplet_loss = TripletLoss(margin=self.margin)
