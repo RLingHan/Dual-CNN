@@ -508,7 +508,7 @@ class embed_net(nn.Module):
         # self.mam3 = GGMAM(1024)
         # self.mam4 = GGMAM(2048)
         # self.ibn1 = IBN(256)
-        self.mdia = MDIA(in_channels=1024, fixed_lam=0.2)
+        self.mdia = MDIA(in_channels=1024, fixed_lam=0.4)
 
     def forward(self, x, sub, labels):
         x2 = self.shared_module_fr(x)
