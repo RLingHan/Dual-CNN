@@ -19,6 +19,7 @@ class ModalAdaptiveIN(nn.Module):
         nn.init.zeros_(self.modal_shift.weight)
 
     def forward(self, x, sub):
+        sub = sub.long()
         x_norm = self.in_norm(x)
         scale = self.modal_scale(sub).view(-1, x.size(1), 1, 1)
         shift = self.modal_shift(sub).view(-1, x.size(1), 1, 1)
