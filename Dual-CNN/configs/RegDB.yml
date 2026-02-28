@@ -43,11 +43,11 @@ mutual_learning: false
 modality_attention: 0
 
 # optimizer
-lr: 0.00030
+lr: 0.00040
 optimizer: adam
 num_epoch: 100
 lr_step: [50, 80]
-wd: 5e-4
+wd: 5e-3
 # augmentation
 random_flip: true
 random_crop: true
