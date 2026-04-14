@@ -9,13 +9,13 @@ dataset_cfg.sysu = CfgNode()
 dataset_cfg.sysu.num_id = 395
 dataset_cfg.sysu.num_cam = 6
 # dataset_cfg.sysu.data_root = "../dataset/SYSU-MM01"
-dataset_cfg.sysu.data_root = "/kaggle/input/sysu-mm01/SYSU-MM01"
+dataset_cfg.sysu.data_root = "../../autodl-tmp/demo/SYSU-MM01"
 
 
 dataset_cfg.regdb = CfgNode()
 dataset_cfg.regdb.num_id = 206
 dataset_cfg.regdb.num_cam = 2
-dataset_cfg.regdb.data_root = "/kaggle/input/regdb001/RegDB"
+dataset_cfg.regdb.data_root = "../../autodl-tmp/demo/RegDB"
 
 dataset_cfg.llcm = CfgNode()
 dataset_cfg.llcm.num_id = 713

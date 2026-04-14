@@ -14,7 +14,7 @@ dataset: regdb
 bg_kl: true
 sm_kl: true
 decompose: false
-IP: true
+IP: false
 distalign: false
 classification: true
 center_cluster: false
@@ -43,15 +43,14 @@ mutual_learning: false
 modality_attention: 0
 
 # optimizer
-lr: 0.00040
+lr: 0.00035
 optimizer: adam
 num_epoch: 100
-lr_step: [50, 80]
-wd: 5e-3
+lr_step: [60]
 # augmentation
 random_flip: true
 random_crop: true
-random_erase: true
+random_erase: false
 color_jitter: false
 padding: 10
 
