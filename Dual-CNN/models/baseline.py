@@ -110,18 +110,25 @@ def kl_soft_dist(feat1,feat2):
     return dist_st_2
 
 # 对称 KL 散度
-def Bg_kl(logits1, logits2):####输入:(60,206),(60,206)
+def Bg_kl(logits1, logits2, T = 1.5):#
+    # KL = nn.KLDivLoss(reduction='batchmean')
+    # kl_loss_12 = KL(F.log_softmax(logits1, 1), F.softmax(logits2, 1))
+    # kl_loss_21 = KL(F.log_softmax(logits2, 1), F.softmax(logits1, 1))
+    # bg_loss_kl = kl_loss_12 + kl_loss_21
     KL = nn.KLDivLoss(reduction='batchmean')
-    kl_loss_12 = KL(F.log_softmax(logits1, 1), F.softmax(logits2, 1))
-    kl_loss_21 = KL(F.log_softmax(logits2, 1), F.softmax(logits1, 1))
-    bg_loss_kl = kl_loss_12 + kl_loss_21
-    return kl_loss_12, bg_loss_kl
-
+    p1_soft = F.softmax(logits1 / T, dim=1)
+    p2_soft = F.softmax(logits2 / T, dim=1)
+    log_p1 = F.log_softmax(logits1 / T, dim=1)
+    log_p2 = F.log_softmax(logits2 / T, dim=1)
+    kl_loss_12 = KL(log_p1, p2_soft)
+    kl_loss_21 = KL(log_p2, p1_soft)
+    bg_loss_kl = (kl_loss_12 + kl_loss_21) * (T ** 2)
+    return bg_loss_kl
 
 '''
 计算了两个 Logits（分类得分）张量之间的对称 KL 散度（Symmetric KL Divergence），
 但其独特之处在于它在计算之前对输入 Logits 进行了按身份分组和特征维度拼接，
-使其能捕捉到更复杂的批次级别语义关系
+使其能捕捉到更复杂次级别语义关系的批
 '''
 def Sm_kl(logits1, logits2, labels):
     KL = nn.KLDivLoss(reduction='batchmean')
@@ -133,7 +140,9 @@ def Sm_kl(logits1, logits2, labels):
     sm_kl_loss_vi = KL(F.log_softmax(sm_v_logits, 1), F.softmax(sm_i_logits, 1))
     sm_kl_loss_iv = KL(F.log_softmax(sm_i_logits, 1), F.softmax(sm_v_logits, 1))
     sm_kl_loss = sm_kl_loss_vi + sm_kl_loss_iv
-    return sm_kl_loss_vi, sm_kl_loss
+    return sm_kl_loss
+
+
 
 # 每个样本的预测熵 熵高 → 模型不确定
 def samplewise_entropy(logits):
@@ -219,6 +228,7 @@ def orthogonal_loss(sh_pl, pr_pl):
     # 相关矩阵所有元素都接近0即为正交
     return (corr ** 2).mean()
 
+
 class Baseline(nn.Module):
     def __init__(self, num_classes=None, drop_last_stride=False, **kwargs):
         super(Baseline, self).__init__()
@@ -259,9 +269,11 @@ class Baseline(nn.Module):
         self.mutual_learning = kwargs.get('mutual_learning', False)
 
         self.classifier = nn.Linear(self.base_dim + self.dim * self.part_num, num_classes, bias=False)
+
+
+
         if self.classification:
             self.id_loss = nn.CrossEntropyLoss(ignore_index=-1)
-            self.sp_id_loss = nn.CrossEntropyLoss(ignore_index=-1)
         if self.triplet:
             self.triplet_loss = TripletLoss(margin=self.margin)
             self.rerank_loss = RerankLoss(margin=0.7)
@@ -271,60 +283,59 @@ class Baseline(nn.Module):
         if self.center_loss:
             self.center_loss = CenterLoss(num_classes, self.base_dim + self.dim * self.part_num)
 
-        self.D_shared_pseu = Discrimination()  # 伪模态分类器（共享特征分支）
-        self.special_D = convDiscrimination(1024)
+        # self.D_shared_pseu = Discrimination()  # 伪模态分类器（共享特征分支）
+        # self.special_D = convDiscrimination(1024)
 
     def forward(self, inputs, labels=None, **kwargs):
-
         cam_ids = kwargs.get('cam_ids')
         sub = (cam_ids == 3) + (cam_ids == 6) #0 Visible 1 Infrared
-        #epoch = kwargs.get('epoch')
+        epoch = kwargs.get('epoch')
         # CNN
         #layer4输出  layer4的语义特征  相互调节后的语义特征 mask前/后模态无关特征 mask前/后特别特征
-        sh_pl,f_sp,modal_logits,lam = self.backbone(inputs,sub=sub,labels=labels)
+        sh_pl = self.backbone(inputs,sub=sub,labels=labels)
         #提取特征
 
         feats = sh_pl #layer4的语义输出
 
         if not self.training:
+
             if feats.size(0) == 2048:
                 feats = self.bn_neck(feats.permute(1, 0))
                 logits = self.classifier(feats)
-                return logits  # feats #
-
+                return logits
 
             else:
-                feats = self.bn_neck(
-                    feats) # 归一化
+                feats = self.bn_neck(feats)
                 return feats
 
         else:
-            return self.train_forward(feats,f_sp,modal_logits,lam, labels,sub, **kwargs)
+            return self.train_forward(feats, labels, sub, **kwargs)
+
+        # ── 训练阶段控制 ─────────────────────────────────────
 
 
-
-    def train_forward(self, feat,f_sp,modal_logits,lam,labels,sub, **kwargs):
+    def train_forward(self, feat,labels,sub, **kwargs):
         epoch = kwargs.get('epoch')
         metric = {}
         loss = 0
 
-        modal_loss = F.cross_entropy(modal_logits, sub.long())
-        loss += 0.1 * modal_loss
-        metric.update({'modal': modal_loss.data})
+        # modal_loss = F.cross_entropy(modal_logits, sub.long())
+        # loss += 0.1 * modal_loss
+        # metric.update({'modal': modal_loss.data})
 
         # sp_logits = self.special_D(f_sp)  # F_sh
         # sp_loss = self.sp_id_loss(sp_logits.float(), t_sub)  # 鼓励判别器识别不出sh
         # loss += sp_loss
         # metric.update({'sp_loss': sp_loss.data})
-        metric.update({'lam': lam.mean().data})
+        # metric.update({'lam': lam.mean().data})
 
-        sub_nb = sub.long()
-        pseu_sh_logits = self.D_shared_pseu(feat) #F_sh
-        p_sub = sub_nb.chunk(2)[0].repeat_interleave(2) #构造标签
-        pp_sub = torch.roll(p_sub, -1) #反转标签
-        pseu_loss = self.id_loss(pseu_sh_logits.float(), pp_sub) #鼓励判别器识别不出sh
-        loss += pseu_loss
-        metric.update({'pseudo_loss': pseu_loss.data})
+        # sub_nb = sub.long()
+        # pseu_sh_logits = self.D_shared_pseu(feat) #F_sh
+        # p_sub = sub_nb.chunk(2)[0].repeat_interleave(2) #构造标签
+        # pp_sub = torch.roll(p_sub, -1) #反转标签
+        # pseu_loss = self.id_loss(pseu_sh_logits.float(), pp_sub) #鼓励判别器识别不出sh
+        # loss += pseu_loss
+        # metric.update({'pseudo_loss': pseu_loss.data})
 
         # pseu_sh_logits = self.special_D(f_sh)  # F_sh
         # p_sub = sub_nb.chunk(2)[0].repeat_interleave(2)  # 构造标签
@@ -390,13 +401,13 @@ class Baseline(nn.Module):
         if self.classification:
             logits = self.classifier(feat)
             if self.CSA1:
-                _, intra_bg = Bg_kl(logits[sub == 0], logits[sub == 1])  # 共享和红外对齐
+                intra_bg = Bg_kl(logits[sub == 0], logits[sub == 1])  # 共享和红外对齐
                 bg_loss = intra_bg
                 loss += bg_loss
                 metric.update({'bg_kl': bg_loss.data})
             if self.CSA2:
-                _, intra_Sm = Sm_kl(logits[sub == 0], logits[sub == 1], labels)  # 模态互相学习
-                sm_kl_loss = intra_Sm * 0.1
+                intra_Sm = Sm_kl(logits[sub == 0], logits[sub == 1], labels)  # 模态互相学习
+                sm_kl_loss = intra_Sm
                 loss += sm_kl_loss
                 metric.update({'sm_kl': sm_kl_loss.data})
 

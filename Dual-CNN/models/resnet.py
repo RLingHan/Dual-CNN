@@ -7,6 +7,9 @@ import torch
 import math
 from layers.module.CBAM import cbam
 from models.channel import AdaptiveGlobalModule, MUMModule, MDIA
+from models.lite import MCFA
+from models.ckda import MCP_ResNet, MSP_ResNet, ModalPrototypeAlign
+from models.ssm import BidirectionalSimplifiedSSM
 
 __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
            'resnet152', 'resnext50_32x4d', 'resnext101_32x8d']
@@ -491,27 +494,60 @@ class embed_net(nn.Module):
         super(embed_net, self).__init__()
 
         self.shared_module_fr = Shared_module_fr(drop_last_stride=drop_last_stride)
-        self.shared_module_bh = Shared_module_bh(drop_last_stride=drop_last_stride)
+        # self.ssm = torch.compile(BidirectionalSimplifiedSSM(d_model=2048, dropout=0.1))
+        # self.shared_module_bh = Shared_module_bh(drop_last_stride=drop_last_stride)
+        self.msp_mid = MSP_ResNet(in_channels=512,  reduction=4, dropout=0.1)
+        self.mcp_mid = MCP_ResNet(in_channels=512,  reduction=8, dropout=0.1)
+        self.msp_deep = MSP_ResNet(in_channels=2048, reduction=8, dropout=0.1)
 
-        self.v_cbam = cbam(512)
-        self.i_cbam = cbam(512)
-        self.alpha = nn.Parameter(torch.tensor(-2.0), requires_grad=True)
+        self.mod_embed_mid  = nn.Parameter(torch.zeros(2, 512,  1, 1))
+        self.mod_embed_deep = nn.Parameter(torch.zeros(2, 2048, 1, 1))
+
+        self.gate = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(512, 512, 1),
+            nn.Sigmoid()
+        )
+
+        self.proto_align = ModalPrototypeAlign(channels=1024)
+        # self.mcfa_l4 = MCFA(in_channels=2048, reduction=16, kernel_size=3)
+        # self.v_cbam = cbam(512)
+        # self.i_cbam = cbam(512)
+        # self.alpha = nn.Parameter(torch.tensor(-2.0), requires_grad=True)
 
         # self.adp_global = AdaptiveGlobalModule(1024)
 
-        self.V_bh = Special_module_bh(drop_last_stride=drop_last_stride)
-        self.I_bh = Special_module_bh(drop_last_stride=drop_last_stride)
-        self.mum = MUMModule(in_channels=1024)
+        # self.V_bh = Special_module_bh(drop_last_stride=drop_last_stride)
+        # self.I_bh = Special_module_bh(drop_last_stride=drop_last_stride)
+        # self.mum = MUMModule(in_channels=1024)
         # self.IN2 = nn.InstanceNorm2d(512, track_running_stats=False)
         # self.IN3 = nn.InstanceNorm2d(1024, track_running_stats=False)
         # self.IN4 = nn.InstanceNorm2d(2048, track_running_stats=False)
         # self.mam3 = GGMAM(1024)
         # self.mam4 = GGMAM(2048)
         # self.ibn1 = IBN(256)
-        self.mdia = MDIA(in_channels=1024, fixed_lam=0.3)
+        # self.mdia = MDIA(in_channels=1024, fixed_lam=0.3)
 
     def forward(self, x, sub, labels):
         x2 = self.shared_module_fr(x)
+
+        # ===== 插入点1：layer2之后 =====
+        p_sp = self.msp_mid(x2, sub)  # 模态特有提示
+        p_sh = self.mcp_mid(x2)  # 模态共有提示
+
+        # 门控融合：让网络自己决定每个通道偏向特有还是共有
+        g = self.gate(x2)  # (B, C, 1, 1)
+        prompt_mid = g * p_sh + (1 - g) * p_sp
+
+        # 加模态标签嵌入
+        inf_idx = (sub == 1)
+        rgb_idx = (sub == 0)
+        if inf_idx.sum() > 0:
+            prompt_mid[inf_idx] += self.mod_embed_mid[1]
+        if rgb_idx.sum() > 0:
+            prompt_mid[rgb_idx] += self.mod_embed_mid[0]
+
+        x2 = x2 + prompt_mid
 
         # 检查模态存在性 ===== 跨模态CBAM融合 =====
         # has_visible = (sub == 0).any()
@@ -548,13 +584,27 @@ class embed_net(nn.Module):
         #     i_ca, i_sa = self.i_cbam(x_i)
         #     x2[sub == 1] = x_i * i_ca * i_sa
 
-        x_sh3 = self.shared_module_bh.model_sh_bh.layer3(x2)
+        x_sh3 = self.shared_module_fr.model_sh_fr.layer3(x2)
+
+        x_sh3 = self.proto_align(x_sh3, sub)
         # x_sh3 = self.mam3(x_sh3)
         # m_sh, m_sp, p_mod = self.mum(x_sh3)
         # f_sh = x_sh3 * m_sh
         # f_sp = x_sh3 * m_sp
-        f_out, f_sp, modal_logits, lam = self.mdia(x_sh3, sub, labels)
-        x_sh4 = self.shared_module_bh.model_sh_bh.layer4(f_out)
+        # f_out, f_sp, modal_logits, lam = self.mdia(x_sh3, sub, labels)
+        x_sh4 = self.shared_module_fr.model_sh_fr.layer4(x_sh3)
+        # x_sh4 = self.mcfa_l4(x_sh4)
+        # x_sh4 = self.ssm(x_sh4)
+        # ===== 插入点2：layer4之后 =====
+        prompt_deep = self.msp_deep(x_sh4, sub)   # 只加模态特有提示
+
+        if inf_idx.sum() > 0:
+            prompt_deep[inf_idx] += self.mod_embed_deep[1]
+        if rgb_idx.sum() > 0:
+            prompt_deep[rgb_idx] += self.mod_embed_deep[0]
+
+        x_sh4 = x_sh4 + prompt_deep
+
         # 共享特征池化
         sh_pl = gem(x_sh4).squeeze()
         sh_pl = sh_pl.view(sh_pl.size(0), -1)  # (B, 2048)
@@ -562,7 +612,7 @@ class embed_net(nn.Module):
         # 返回 sh_proj 用于正交损失，而不是 sh_pl
         # return sh_pl, alpha, f_sh, f_sp
 
-        return sh_pl,f_sp,modal_logits,lam
+        return sh_pl
 
 
 def _resnet(arch, block, layers, pretrained, progress, **kwargs):
