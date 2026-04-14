@@ -87,8 +87,8 @@ def get_train_loader(dataset, root, sample_method, batch_size, p_size, k_size, i
                                     transform_thermal=transform_thermal)
     elif dataset == 'regdb':
         train_dataset = RegDBDataset(root, mode='train',
-                                     transform=transform,
-                                     transform_thermal=transform)
+                                     transform=transform_color,
+                                     transform_thermal=transform_thermal)
     elif dataset == 'llcm':
         train_dataset = LLCMData(root, mode='train', transform=transform_color)
     elif dataset == 'market':
